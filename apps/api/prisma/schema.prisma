@@ -1,0 +1,123 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  phone     String   @unique
+  email     String?  @unique
+  password  String
+  role      Role     @default(CUSTOMER)
+  bookings  Booking[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Operator {
+  id          String  @id @default(cuid())
+  companyName String
+  licenseNo   String  @unique
+  phone       String
+  buses       Bus[]
+  createdAt   DateTime @default(now())
+}
+
+model Bus {
+  id          String     @id @default(cuid())
+  operatorId  String
+  operator    Operator   @relation(fields: [operatorId], references: [id])
+  plateNumber String     @unique
+  totalSeats  Int
+  busType     BusType    @default(STANDARD)
+  schedules   Schedule[]
+  createdAt   DateTime   @default(now())
+}
+
+model Route {
+  id                  String     @id @default(cuid())
+  fromCity            String
+  toCity              String
+  distanceKm          Float
+  estimatedDurationMin Int
+  schedules           Schedule[]
+  createdAt           DateTime   @default(now())
+
+  @@unique([fromCity, toCity])
+}
+
+model Schedule {
+  id            String    @id @default(cuid())
+  routeId       String
+  route         Route     @relation(fields: [routeId], references: [id])
+  busId         String
+  bus           Bus       @relation(fields: [busId], references: [id])
+  departureTime DateTime
+  arrivalTime   DateTime
+  price         Float
+  bookings      Booking[]
+  createdAt     DateTime  @default(now())
+}
+
+model Booking {
+  id          String        @id @default(cuid())
+  userId      String
+  user        User          @relation(fields: [userId], references: [id])
+  scheduleId  String
+  schedule    Schedule      @relation(fields: [scheduleId], references: [id])
+  seatNumbers String[]
+  totalPrice  Float
+  status      BookingStatus @default(PENDING)
+  qrCode      String        @unique
+  payment     Payment?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+model Payment {
+  id        String        @id @default(cuid())
+  bookingId String        @unique
+  booking   Booking       @relation(fields: [bookingId], references: [id])
+  amount    Float
+  method    PaymentMethod
+  chapaRef  String?
+  status    PaymentStatus @default(PENDING)
+  createdAt DateTime      @default(now())
+}
+
+enum Role {
+  CUSTOMER
+  OPERATOR
+  DRIVER
+  ADMIN
+}
+
+enum BusType {
+  STANDARD
+  LUXURY
+  MINIBUS
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+enum PaymentMethod {
+  TELEBIRR
+  CBE_BIRR
+  CARD
+  BANK_TRANSFER
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}

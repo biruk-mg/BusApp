@@ -1,0 +1,21 @@
+{
+  "name": "bus-platform",
+  "private": true,
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "typecheck": "turbo typecheck",
+    "dev:api": "turbo dev --filter=@bus/api",
+    "dev:web": "turbo dev --filter=@bus/web",
+    "dev:mobile": "turbo dev --filter=@bus/mobile"
+  },
+  "devDependencies": {
+    "turbo": "latest"
+  },
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
+  "packageManager": "pnpm@9.0.0"
+}
