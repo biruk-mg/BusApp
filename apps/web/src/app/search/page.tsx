@@ -1,7 +1,6 @@
 'use client'
-export const dynamic = 'force-dynamic'
 
-
+import { Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
@@ -20,7 +19,7 @@ interface ScheduleResult {
   bus: { plateNumber: string; totalSeats: number; busType: string; operator: { companyName: string } }
 }
 
-export default function SearchPage() {
+function SearchResults() {
   const searchParams = useSearchParams()
   const router = useRouter()
   const fromCity = searchParams.get('fromCity') || ''
@@ -46,14 +45,10 @@ export default function SearchPage() {
       }
     }
     if (fromCity && toCity && date) fetch()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromCity, toCity, date])
 
   return (
-    <div style={{ minHeight: '100vh', background: '#F8F8F8' }}>
-      <Navbar />
-
-      {/* Dark Header */}
+    <>
       <div style={{ background: '#1A0A0A', padding: '32px 80px' }}>
         <div style={{ maxWidth: '900px', margin: '0 auto' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '10px' }}>
@@ -76,7 +71,6 @@ export default function SearchPage() {
         </div>
       </div>
 
-      {/* Results */}
       <div style={{ maxWidth: '900px', margin: '0 auto', padding: '32px 80px' }}>
         {loading && (
           <div style={{ textAlign: 'center', padding: '80px 0' }}>
@@ -116,7 +110,6 @@ export default function SearchPage() {
               key={schedule.id}
               style={{ background: 'white', borderRadius: '16px', border: '1px solid #EEEEEE', padding: '28px 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
             >
-              {/* Left - Times */}
               <div style={{ flex: 1 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '32px', marginBottom: '20px' }}>
                   <div>
@@ -149,7 +142,6 @@ export default function SearchPage() {
                   </div>
                 </div>
 
-                {/* Operator Row */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingTop: '16px', borderTop: '1px solid #F5F5F5' }}>
                   <span style={{ background: '#FEF2F2', color: '#C0392B', fontSize: '11px', fontWeight: 600, padding: '4px 12px', borderRadius: '20px' }}>
                     {schedule.bus.operator.companyName}
@@ -161,7 +153,6 @@ export default function SearchPage() {
                 </div>
               </div>
 
-              {/* Right - Price */}
               <div style={{ paddingLeft: '32px', borderLeft: '1px solid #F0F0F0', marginLeft: '32px', textAlign: 'right', minWidth: '160px' }}>
                 <div style={{ fontSize: '30px', fontWeight: 700, color: '#C0392B', marginBottom: '4px' }}>
                   {formatPrice(schedule.price)}
@@ -180,6 +171,22 @@ export default function SearchPage() {
           ))}
         </div>
       </div>
+    </>
+  )
+}
+
+export default function SearchPage() {
+  return (
+    <div style={{ minHeight: '100vh', background: '#F8F8F8' }}>
+      <Navbar />
+      <Suspense fallback={
+        <div style={{ textAlign: 'center', padding: '80px 0' }}>
+          <Bus size={40} color="#E0E0E0" style={{ display: 'block', margin: '0 auto 12px' }} />
+          <p style={{ color: '#999' }}>Preparing results...</p>
+        </div>
+      }>
+        <SearchResults />
+      </Suspense>
     </div>
   )
 }
