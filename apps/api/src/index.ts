@@ -2,6 +2,8 @@ import express from 'express'
 import type { Express } from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
+import swaggerUi from 'swagger-ui-express'
+import { swaggerSpec } from './swagger'
 
 // ─── Route Imports ──────────────────────────────────────────
 import authRoutes from './routes/auth.routes'
@@ -48,6 +50,8 @@ app.use('/api/v1/schedules', scheduleRoutes)
 app.use('/api/v1/bookings', bookingRoutes)
 app.use('/api/v1/operator', operatorRoutes)
 app.use('/api/v1/payments', paymentRoutes)
+// ─── Swagger Docs ────────────────────────────────────────
+app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec))
 
 console.log('✅ Swiftbus: All routes registered')
 
