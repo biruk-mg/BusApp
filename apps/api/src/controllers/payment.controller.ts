@@ -58,13 +58,13 @@ export const initializePayment = async (req: AuthRequest, res: Response): Promis
       {
         amount: booking.totalPrice,
         currency: 'ETB',
-        email: booking.user.email || `${booking.user.phone}@ethiobus.com`,
+        email: booking.user.email || `user${booking.user.id.slice(-6)}@ethiobus.com`,
         first_name: booking.user.name.split(' ')[0],
         last_name: booking.user.name.split(' ')[1] || booking.user.name,
         phone_number: booking.user.phone,
         tx_ref: txRef,
         callback_url: `${process.env.API_URL}/api/v1/payments/verify`,
-        return_url: `http://localhost:3000/bookings/${bookingId}?payment=success`,
+        return_url: `${process.env.FRONTEND_URL}/bookings/${bookingId}?payment=success`,
        customization: {
           title: 'EthioBus',
           description: `${booking.schedule.route.fromCity} to ${booking.schedule.route.toCity}`,
