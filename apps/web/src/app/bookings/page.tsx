@@ -6,7 +6,7 @@ import { api } from '@/lib/api'
 import { useAuthStore } from '@/store/auth.store'
 import Navbar from '@/components/Navbar'
 import { formatDate, formatTime, formatPrice } from '@bus/utils'
-import { Bus, Calendar, MapPin, Ticket } from 'lucide-react'
+import { Bus, Calendar, MapPin, Ticket, ArrowRight } from 'lucide-react'
 
 interface Booking {
   id: string
@@ -52,79 +52,112 @@ export default function BookingsPage() {
     fetchBookings()
   }, [isAuthenticated, router])
 
-  const statusColor = (status: string) => {
-    if (status === 'CONFIRMED') return 'bg-green-100 text-green-700'
-    if (status === 'CANCELLED') return 'bg-red-100 text-red-700'
-    if (status === 'COMPLETED') return 'bg-gray-100 text-gray-700'
-    return 'bg-yellow-100 text-yellow-700'
+  const statusStyle = (status: string) => {
+    if (status === 'CONFIRMED') return { bg: '#F0FFF4', color: '#2E8B57' }
+    if (status === 'CANCELLED') return { bg: '#FFF5F5', color: '#C0392B' }
+    if (status === 'COMPLETED') return { bg: '#F5F5F5', color: '#666' }
+    return { bg: '#FFFBEB', color: '#D4A017' }
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div style={{ minHeight: '100vh', background: '#F8F8F8' }}>
       <Navbar />
-      <div className="max-w-4xl mx-auto px-4 py-8">
-        <h1 className="text-2xl font-bold text-gray-800 mb-6 flex items-center gap-2">
-          <Ticket size={24} />
-          My Bookings
-        </h1>
 
+      {/* Dark Header */}
+      <div style={{ background: '#1A0A0A', padding: '32px 80px' }}>
+        <div style={{ maxWidth: '900px', margin: '0 auto' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
+            <Ticket size={22} color="#C0392B" />
+            <h1 style={{ fontSize: '24px', fontWeight: 700, color: 'white' }}>My Bookings</h1>
+          </div>
+          <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.4)' }}>
+            {bookings.length} booking{bookings.length !== 1 ? 's' : ''} found
+          </p>
+        </div>
+      </div>
+
+      <div style={{ maxWidth: '900px', margin: '0 auto', padding: '32px 80px' }}>
+
+        {/* Loading */}
         {loading && (
-          <div className="text-center py-20 text-gray-500">Loading bookings...</div>
+          <div style={{ textAlign: 'center', padding: '80px 0' }}>
+            <Bus size={40} color="#E0E0E0" style={{ display: 'block', margin: '0 auto 12px' }} />
+            <p style={{ color: '#999' }}>Loading bookings...</p>
+          </div>
         )}
 
+        {/* Empty */}
         {!loading && bookings.length === 0 && (
-          <div className="text-center py-20">
-            <Bus size={48} className="mx-auto text-gray-300 mb-3" />
-            <p className="text-gray-500">No bookings yet</p>
+          <div style={{ textAlign: 'center', padding: '80px 0' }}>
+            <Ticket size={48} color="#E0E0E0" style={{ display: 'block', margin: '0 auto 16px' }} />
+            <p style={{ color: '#999', marginBottom: '20px', fontSize: '15px' }}>No bookings yet</p>
             <button
               onClick={() => router.push('/')}
-              className="mt-4 bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700"
+              style={{ background: '#C0392B', color: 'white', border: 'none', padding: '12px 28px', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}
             >
               Book a Trip
             </button>
           </div>
         )}
 
-        <div className="space-y-4">
-          {bookings.map((booking) => (
-            <div
-              key={booking.id}
-              onClick={() => router.push(`/bookings/${booking.id}`)}
-              className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 cursor-pointer hover:shadow-md transition-shadow"
-            >
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2">
-                  <MapPin size={16} className="text-blue-600" />
-                  <span className="font-semibold">
-                    {booking.schedule.route.fromCity} → {booking.schedule.route.toCity}
+        {/* Bookings List */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          {bookings.map((booking) => {
+            const s = statusStyle(booking.status)
+            return (
+              <div
+                key={booking.id}
+                onClick={() => router.push(`/bookings/${booking.id}`)}
+                style={{ background: 'white', borderRadius: '16px', border: '1px solid #EEEEEE', padding: '24px 28px', cursor: 'pointer', transition: 'box-shadow 0.2s' }}
+                onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 4px 20px rgba(0,0,0,0.08)')}
+                onMouseLeave={e => (e.currentTarget.style.boxShadow = 'none')}
+              >
+                {/* Top Row */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <MapPin size={14} color="#C0392B" />
+                    <span style={{ fontSize: '16px', fontWeight: 700, color: '#1a1a1a' }}>
+                      {booking.schedule.route.fromCity}
+                    </span>
+                    <ArrowRight size={14} color="#D4A017" />
+                    <span style={{ fontSize: '16px', fontWeight: 700, color: '#1a1a1a' }}>
+                      {booking.schedule.route.toCity}
+                    </span>
+                  </div>
+                  <span style={{ fontSize: '11px', fontWeight: 600, padding: '4px 12px', borderRadius: '20px', background: s.bg, color: s.color }}>
+                    {booking.status}
                   </span>
                 </div>
-                <span className={`text-xs font-medium px-2 py-1 rounded-full ${statusColor(booking.status)}`}>
-                  {booking.status}
-                </span>
-              </div>
 
-              <div className="flex items-center gap-6 text-sm text-gray-600">
-                <div className="flex items-center gap-1">
-                  <Calendar size={14} />
-                  {formatDate(booking.schedule.departureTime)}
+                {/* Middle Row */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '24px', marginBottom: '16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#666' }}>
+                    <Calendar size={14} color="#999" />
+                    {formatDate(booking.schedule.departureTime)}
+                  </div>
+                  <div style={{ fontSize: '13px', color: '#666' }}>
+                    {formatTime(booking.schedule.departureTime)} → {formatTime(booking.schedule.arrivalTime)}
+                  </div>
+                  <div style={{ fontSize: '13px', color: '#666' }}>
+                    Seats: <span style={{ fontWeight: 600, color: '#1a1a1a' }}>{booking.seatNumbers.join(', ')}</span>
+                  </div>
                 </div>
-                <div>
-                  {formatTime(booking.schedule.departureTime)} → {formatTime(booking.schedule.arrivalTime)}
-                </div>
-                <div>Seats: {booking.seatNumbers.join(', ')}</div>
-              </div>
 
-              <div className="mt-3 pt-3 border-t border-gray-100 flex justify-between items-center">
-                <span className="text-sm text-gray-500">
-                  {booking.schedule.bus.busType} • {booking.schedule.bus.plateNumber}
-                </span>
-                <span className="font-bold text-blue-600">
-                  {formatPrice(booking.totalPrice)}
-                </span>
+                {/* Bottom Row */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: '16px', borderTop: '1px solid #F5F5F5' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{ background: '#FEF2F2', color: '#C0392B', fontSize: '11px', fontWeight: 600, padding: '4px 10px', borderRadius: '20px' }}>
+                      {booking.schedule.bus.busType}
+                    </span>
+                    <span style={{ fontSize: '12px', color: '#bbb' }}>{booking.schedule.bus.plateNumber}</span>
+                  </div>
+                  <span style={{ fontSize: '18px', fontWeight: 700, color: '#C0392B' }}>
+                    {formatPrice(booking.totalPrice)}
+                  </span>
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       </div>
     </div>
