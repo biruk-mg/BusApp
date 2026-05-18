@@ -8,7 +8,7 @@ import { prisma } from '../lib/prisma'
 const registerSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
   phone: z.string().regex(/^(\+2519|09)\d{8}$/, 'Invalid Ethiopian phone number'),
-  email: z.string().email('Invalid email').optional(),
+  email: z.string().email('Invalid email').optional().or(z.literal('')),
   password: z.string().min(6, 'Password must be at least 6 characters'),
 })
 
