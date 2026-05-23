@@ -5,6 +5,8 @@ import {
   createBus,
   getOperatorBookings,
   getOperatorStats,
+  getRevenueAnalytics,
+  getScheduleAvailability, 
 } from '../controllers/operator.controller'
 import { authenticate } from '../middleware/auth'
 
@@ -23,5 +25,8 @@ router.get('/buses', authenticate, authorizeOperator, getOperatorBuses)
 router.post('/buses', authenticate, authorizeOperator, createBus)
 router.get('/bookings', authenticate, authorizeOperator, getOperatorBookings)
 router.get('/stats', authenticate, authorizeOperator, getOperatorStats)
+router.get('/analytics', authenticate, authorizeOperator, getRevenueAnalytics)
+router.get('/availability', authenticate, authorizeOperator, getScheduleAvailability)
+router.get('/buses/all', authenticate, authorizeOperator, getOperatorBuses)
 
 export default router
