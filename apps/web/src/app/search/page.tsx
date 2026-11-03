@@ -2,7 +2,7 @@
 
 import { Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api } from '@/lib/api'
 import Navbar from '@/components/Navbar'
 import { Clock, MapPin, Users, ArrowRight, Bus } from 'lucide-react'
@@ -30,6 +30,30 @@ function SearchResults() {
   const [schedules, setSchedules] = useState<ScheduleResult[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [busTypeFilter, setBusTypeFilter] = useState('ALL')
+  const [operatorFilter, setOperatorFilter] = useState('ALL')
+  const [sortBy, setSortBy] = useState<'time' | 'price'>('time')
+
+  const operators = useMemo(
+    () => Array.from(new Set(schedules.map((s) => s.bus.operator.companyName))).sort(),
+    [schedules]
+  )
+  const busTypes = useMemo(
+    () => Array.from(new Set(schedules.map((s) => s.bus.busType))).sort(),
+    [schedules]
+  )
+  const visible = useMemo(() => {
+    const list = schedules.filter(
+      (s) =>
+        (busTypeFilter === 'ALL' || s.bus.busType === busTypeFilter) &&
+        (operatorFilter === 'ALL' || s.bus.operator.companyName === operatorFilter)
+    )
+    return [...list].sort((a, b) =>
+      sortBy === 'price'
+        ? a.price - b.price || a.departureTime.localeCompare(b.departureTime)
+        : a.departureTime.localeCompare(b.departureTime)
+    )
+  }, [schedules, busTypeFilter, operatorFilter, sortBy])
 
   useEffect(() => {
     const fetch = async () => {
@@ -65,7 +89,7 @@ function SearchResults() {
             </span>
             <div style={{ width: '4px', height: '4px', borderRadius: '50%', background: 'rgba(255,255,255,0.2)' }} />
             <span style={{ fontSize: '13px', color: 'rgba(255,255,255,0.4)' }}>
-              {schedules.length} bus{schedules.length !== 1 ? 'es' : ''} found
+              {visible.length} bus{visible.length !== 1 ? 'es' : ''} found
             </span>
           </div>
         </div>
@@ -104,8 +128,47 @@ function SearchResults() {
           </div>
         )}
 
+        {!loading && !error && schedules.length > 0 && (
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '20px' }}>
+            <select
+              value={busTypeFilter}
+              onChange={(e) => setBusTypeFilter(e.target.value)}
+              style={{ padding: '10px 14px', borderRadius: '10px', border: '1px solid #E5E5E5', background: 'white', fontSize: '13px' }}
+            >
+              <option value="ALL">All bus types</option>
+              {busTypes.map((t) => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </select>
+            <select
+              value={operatorFilter}
+              onChange={(e) => setOperatorFilter(e.target.value)}
+              style={{ padding: '10px 14px', borderRadius: '10px', border: '1px solid #E5E5E5', background: 'white', fontSize: '13px' }}
+            >
+              <option value="ALL">All operators</option>
+              {operators.map((o) => (
+                <option key={o} value={o}>{o}</option>
+              ))}
+            </select>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as 'time' | 'price')}
+              style={{ padding: '10px 14px', borderRadius: '10px', border: '1px solid #E5E5E5', background: 'white', fontSize: '13px' }}
+            >
+              <option value="time">Earliest first</option>
+              <option value="price">Cheapest first</option>
+            </select>
+          </div>
+        )}
+
+        {!loading && !error && schedules.length > 0 && visible.length === 0 && (
+          <p style={{ color: '#999', fontSize: '14px', padding: '20px 0' }}>
+            No buses match these filters.
+          </p>
+        )}
+
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          {schedules.map((schedule) => (
+          {visible.map((schedule) => (
             <div
               key={schedule.id}
               style={{ background: 'white', borderRadius: '16px', border: '1px solid #EEEEEE', padding: '28px 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}

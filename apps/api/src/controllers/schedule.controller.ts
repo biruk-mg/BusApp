@@ -1,6 +1,9 @@
 import { Request, Response } from 'express'
 import { z } from 'zod'
+import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma'
+import { AuthRequest } from '../middleware/auth'
+import { getOperatorForUser } from '../lib/operator'
 
 const createScheduleSchema = z.object({
   routeId: z.string(),
@@ -10,50 +13,83 @@ const createScheduleSchema = z.object({
   price: z.number().positive(),
 })
 
+const BUS_TYPES = ['STANDARD', 'LUXURY', 'MINIBUS'] as const
+type BusTypeValue = (typeof BUS_TYPES)[number]
+
+// ─── Search (public) ─────────────────────────────────────
+// Only upcoming trips are ever returned. All filters are optional:
+//   fromCity, toCity, date (YYYY-MM-DD), busType, operator (name contains),
+//   maxPrice, sort=time|price
 export const searchSchedules = async (req: Request, res: Response): Promise<void> => {
   try {
-    const fromCity = req.query.fromCity as string
-    const toCity = req.query.toCity as string
-    const date = req.query.date as string
+    const fromCity = (req.query.fromCity as string | undefined)?.trim()
+    const toCity = (req.query.toCity as string | undefined)?.trim()
+    const date = req.query.date as string | undefined
+    const busType = req.query.busType as string | undefined
+    const operator = (req.query.operator as string | undefined)?.trim()
+    const maxPrice = req.query.maxPrice ? Number(req.query.maxPrice) : undefined
+    const sort = req.query.sort === 'price' ? 'price' : 'time'
 
-    if (!fromCity || !toCity || !date) {
-      res.status(400).json({ success: false, error: 'fromCity, toCity and date are required' })
-      return
+    const now = new Date()
+    const where: Prisma.ScheduleWhereInput = { departureTime: { gte: now } }
+
+    if (date) {
+      const startOfDay = new Date(date)
+      startOfDay.setHours(0, 0, 0, 0)
+      const endOfDay = new Date(date)
+      endOfDay.setHours(23, 59, 59, 999)
+      if (Number.isNaN(startOfDay.getTime())) {
+        res.status(400).json({ success: false, error: 'Invalid date' })
+        return
+      }
+      // Never go earlier than "now", even when searching for today
+      where.departureTime = { gte: startOfDay > now ? startOfDay : now, lte: endOfDay }
     }
 
-    const startOfDay = new Date(date)
-    startOfDay.setHours(0, 0, 0, 0)
-    const endOfDay = new Date(date)
-    endOfDay.setHours(23, 59, 59, 999)
+    const routeFilter: Prisma.RouteWhereInput = {}
+    if (fromCity) routeFilter.fromCity = { equals: fromCity, mode: 'insensitive' }
+    if (toCity) routeFilter.toCity = { equals: toCity, mode: 'insensitive' }
+    if (fromCity || toCity) where.route = routeFilter
+
+    const busFilter: Prisma.BusWhereInput = {}
+    if (busType && BUS_TYPES.includes(busType as BusTypeValue)) {
+      busFilter.busType = busType as BusTypeValue
+    }
+    if (operator) {
+      busFilter.operator = { companyName: { contains: operator, mode: 'insensitive' } }
+    }
+    if (Object.keys(busFilter).length > 0) where.bus = busFilter
+
+    if (maxPrice !== undefined && Number.isFinite(maxPrice)) where.price = { lte: maxPrice }
 
     const schedules = await prisma.schedule.findMany({
-      where: {
-        route: {
-          fromCity: { equals: fromCity, mode: 'insensitive' },
-          toCity: { equals: toCity, mode: 'insensitive' },
-        },
-        departureTime: { gte: startOfDay, lte: endOfDay },
-      },
+      where,
       include: {
         route: true,
         bus: { include: { operator: true } },
         _count: { select: { bookings: true } },
+        // Seats held by active bookings (same statuses the booking flow blocks)
+        bookings: {
+          where: { status: { in: ['PENDING', 'CONFIRMED'] } },
+          select: { seatNumbers: true },
+        },
       },
-      orderBy: { departureTime: 'asc' },
+      orderBy: sort === 'price' ? [{ price: 'asc' }, { departureTime: 'asc' }] : { departureTime: 'asc' },
+      take: 100,
     })
 
-    const schedulesWithAvailability = schedules.map((schedule) => ({
-      ...schedule,
-      availableSeats: schedule.bus.totalSeats - schedule._count.bookings,
-      totalSeats: schedule.bus.totalSeats,
-    }))
+    const schedulesWithAvailability = schedules.map(({ bookings, ...schedule }) => {
+      const bookedSeats = bookings.reduce((n, b) => n + b.seatNumbers.length, 0)
+      return {
+        ...schedule,
+        availableSeats: Math.max(0, schedule.bus.totalSeats - bookedSeats),
+        totalSeats: schedule.bus.totalSeats,
+      }
+    })
 
     res.json({
       success: true,
-      data: {
-        schedules: schedulesWithAvailability,
-        total: schedules.length,
-      },
+      data: { schedules: schedulesWithAvailability, total: schedulesWithAvailability.length },
     })
   } catch (error) {
     console.error('SearchSchedules error:', error)
@@ -61,9 +97,12 @@ export const searchSchedules = async (req: Request, res: Response): Promise<void
   }
 }
 
-export const getAllSchedules = async (_req: Request, res: Response): Promise<void> => {
+// ─── List all (upcoming by default; ?includePast=true for history) ──
+export const getAllSchedules = async (req: Request, res: Response): Promise<void> => {
   try {
+    const includePast = req.query.includePast === 'true'
     const schedules = await prisma.schedule.findMany({
+      where: includePast ? {} : { departureTime: { gte: new Date() } },
       include: {
         route: true,
         bus: { include: { operator: true } },
@@ -78,7 +117,8 @@ export const getAllSchedules = async (_req: Request, res: Response): Promise<voi
   }
 }
 
-export const createSchedule = async (req: Request, res: Response): Promise<void> => {
+// ─── Create (operator for own buses, or admin) ───────────
+export const createSchedule = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const parsed = createScheduleSchema.safeParse(req.body)
     if (!parsed.success) {
@@ -87,15 +127,54 @@ export const createSchedule = async (req: Request, res: Response): Promise<void>
     }
 
     const { routeId, busId, departureTime, arrivalTime, price } = parsed.data
+    const departure = new Date(departureTime)
+    const arrival = new Date(arrivalTime)
+
+    if (departure <= new Date()) {
+      res.status(400).json({ success: false, error: 'Departure time must be in the future' })
+      return
+    }
+    if (arrival <= departure) {
+      res.status(400).json({ success: false, error: 'Arrival time must be after departure time' })
+      return
+    }
+
+    const [bus, route] = await Promise.all([
+      prisma.bus.findUnique({ where: { id: busId } }),
+      prisma.route.findUnique({ where: { id: routeId } }),
+    ])
+    if (!bus) {
+      res.status(404).json({ success: false, error: 'Bus not found' })
+      return
+    }
+    if (!route) {
+      res.status(404).json({ success: false, error: 'Route not found' })
+      return
+    }
+
+    // Operators may only schedule their own buses
+    if (req.userRole === 'OPERATOR') {
+      const operator = await getOperatorForUser(req.userId!)
+      if (!operator || bus.operatorId !== operator.id) {
+        res.status(403).json({ success: false, error: 'You can only schedule your own buses' })
+        return
+      }
+    }
+
+    // A bus can't be in two places at once
+    const overlapping = await prisma.schedule.findFirst({
+      where: { busId, departureTime: { lt: arrival }, arrivalTime: { gt: departure } },
+    })
+    if (overlapping) {
+      res.status(409).json({
+        success: false,
+        error: 'This bus already has a trip that overlaps with this time',
+      })
+      return
+    }
 
     const schedule = await prisma.schedule.create({
-      data: {
-        routeId,
-        busId,
-        departureTime: new Date(departureTime),
-        arrivalTime: new Date(arrivalTime),
-        price,
-      },
+      data: { routeId, busId, departureTime: departure, arrivalTime: arrival, price },
       include: { route: true, bus: true },
     })
 
@@ -106,9 +185,36 @@ export const createSchedule = async (req: Request, res: Response): Promise<void>
   }
 }
 
-export const deleteSchedule = async (req: Request, res: Response): Promise<void> => {
+// ─── Delete (operator for own trips, or admin; only if no bookings) ──
+export const deleteSchedule = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const id = req.params.id as string
+
+    const schedule = await prisma.schedule.findUnique({
+      where: { id },
+      include: { bus: true, _count: { select: { bookings: true } } },
+    })
+    if (!schedule) {
+      res.status(404).json({ success: false, error: 'Schedule not found' })
+      return
+    }
+
+    if (req.userRole === 'OPERATOR') {
+      const operator = await getOperatorForUser(req.userId!)
+      if (!operator || schedule.bus.operatorId !== operator.id) {
+        res.status(403).json({ success: false, error: 'You can only delete your own schedules' })
+        return
+      }
+    }
+
+    if (schedule._count.bookings > 0) {
+      res.status(409).json({
+        success: false,
+        error: 'This trip already has bookings, so it cannot be deleted',
+      })
+      return
+    }
+
     await prisma.schedule.delete({ where: { id } })
     res.json({ success: true, message: 'Schedule deleted' })
   } catch (error) {

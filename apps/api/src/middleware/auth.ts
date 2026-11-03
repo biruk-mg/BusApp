@@ -44,3 +44,15 @@ export const authorizeAdmin = (
   }
   next()
 }
+
+export const authorizeOperatorOrAdmin = (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): void => {
+  if (req.userRole !== 'OPERATOR' && req.userRole !== 'ADMIN') {
+    res.status(403).json({ success: false, error: 'Operator access required' })
+    return
+  }
+  next()
+}

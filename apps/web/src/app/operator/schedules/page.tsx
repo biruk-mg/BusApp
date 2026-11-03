@@ -86,8 +86,9 @@ console.log('schedules data:', schedulesRes.data.data.schedules)
       await api.delete(`/schedules/${id}`)
       toast.success('Schedule deleted')
       fetchAll()
-    } catch {
-      toast.error('Failed to delete')
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } } }
+      toast.error(error.response?.data?.error || 'Failed to delete')
     }
   }
 

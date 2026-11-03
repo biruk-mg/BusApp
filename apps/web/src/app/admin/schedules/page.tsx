@@ -27,7 +27,7 @@ export default function AdminSchedulesPage() {
 
   const fetchAll = async () => {
     try {
-      const [schedulesRes, routesRes] = await Promise.all([api.get('/schedules'), api.get('/routes')])
+      const [schedulesRes, routesRes] = await Promise.all([api.get('/schedules', { params: { includePast: true } }), api.get('/routes')])
       setSchedules(schedulesRes.data.data.schedules)
       setRoutes(routesRes.data.data.routes)
     } catch { toast.error('Failed to load data') }
@@ -61,7 +61,10 @@ export default function AdminSchedulesPage() {
       await api.delete(`/schedules/${id}`)
       toast.success('Deleted')
       fetchAll()
-    } catch { toast.error('Failed') }
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } } }
+      toast.error(error.response?.data?.error || 'Failed')
+    }
   }
 
   return (
