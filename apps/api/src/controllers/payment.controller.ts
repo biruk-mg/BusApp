@@ -51,7 +51,6 @@ export const initializePayment = async (req: AuthRequest, res: Response): Promis
     const txRef = `ETHIOBUS-${bookingId}-${Date.now()}`
     const chapaKey = process.env.CHAPA_SECRET_KEY
 
-    console.log('🔑 Chapa key:', chapaKey ? chapaKey.slice(0, 20) + '...' : 'UNDEFINED')
 
     const chapaRes = await axios.post(
       `${CHAPA_BASE_URL}/transaction/initialize`,

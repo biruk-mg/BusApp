@@ -19,7 +19,7 @@ dotenv.config({ path: '../../.env' })
 const app: Express = express()
 
 /**
- * PORT: Railway automatically provides a PORT variable.
+ * PORT: Hosting platforms (Render, Railway, etc.) provide a PORT variable.
  * Falling back to 4000 for your local development environment.
  */
 const PORT = process.env.PORT || 4000
@@ -28,15 +28,21 @@ const PORT = process.env.PORT || 4000
 
 /**
  * CORS Configuration:
- * In production, we restrict access to your specific frontend URL 
- * to prevent unauthorized external requests.
+ * Allowed origins come from the FRONTEND_URL env variable
+ * (comma-separated, e.g. "https://mugobus.vercel.app,https://mugobus.com").
+ * Requests with no Origin header (mobile app, curl, server-to-server) are allowed.
  */
+const allowedOrigins = (process.env.FRONTEND_URL || '')
+  .split(',')
+  .map((o) => o.trim().replace(/\/$/, ''))
+  .filter(Boolean)
+allowedOrigins.push('http://localhost:3000') // Local Next.js dev server
+
 app.use(cors({
-  origin: [
-    'https://busapi-production.up.railway.app', // Your API domain from settings
-    /\.railway\.app$/,                          // Matches any railway app domain
-    'http://localhost:3000'                    // Local Next.js dev server
-  ],
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true)
+    return callback(new Error(`CORS: origin not allowed: ${origin}`))
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
 }))
@@ -68,7 +74,7 @@ app.get('/health', (_req, res) => {
 // ─── Start Server ──────────────────────────────────────────
 /**
  * Using '0.0.0.0' is a requirement for many cloud providers 
- * like Railway to ensure the service is reachable.
+ * like Render to ensure the service is reachable.
  */
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`🚌 API running on port: ${PORT}`)

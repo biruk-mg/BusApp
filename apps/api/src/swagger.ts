@@ -12,10 +12,9 @@ const options = {
       },
     },
     servers: [
-      {
-        url: 'https://busapi-production.up.railway.app',
-        description: 'Production server',
-      },
+      ...(process.env.API_URL
+        ? [{ url: process.env.API_URL, description: 'Production server' }]
+        : []),
       {
         url: 'http://localhost:4000',
         description: 'Local development',
