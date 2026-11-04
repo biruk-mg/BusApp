@@ -64,7 +64,7 @@ export default function BookingsPage() {
       <Navbar />
 
       {/* Dark Header */}
-      <div style={{ background: '#1A0A0A', padding: '32px 80px' }}>
+      <div className="hero-pad" style={{ background: '#1A0A0A', padding: '32px 80px' }}>
         <div style={{ maxWidth: '900px', margin: '0 auto' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
             <Ticket size={22} color="#C0392B" />
@@ -76,7 +76,7 @@ export default function BookingsPage() {
         </div>
       </div>
 
-      <div style={{ maxWidth: '900px', margin: '0 auto', padding: '32px 80px' }}>
+      <div className="page-pad" style={{ maxWidth: '900px', margin: '0 auto', padding: '32px 80px' }}>
 
         {/* Loading */}
         {loading && (
@@ -108,12 +108,13 @@ export default function BookingsPage() {
               <div
                 key={booking.id}
                 onClick={() => router.push(`/bookings/${booking.id}`)}
+                className="booking-card"
                 style={{ background: 'white', borderRadius: '16px', border: '1px solid #EEEEEE', padding: '24px 28px', cursor: 'pointer', transition: 'box-shadow 0.2s' }}
                 onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 4px 20px rgba(0,0,0,0.08)')}
                 onMouseLeave={e => (e.currentTarget.style.boxShadow = 'none')}
               >
                 {/* Top Row */}
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                <div className="booking-top" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <MapPin size={14} color="#C0392B" />
                     <span style={{ fontSize: '16px', fontWeight: 700, color: '#1a1a1a' }}>
@@ -130,7 +131,7 @@ export default function BookingsPage() {
                 </div>
 
                 {/* Middle Row */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '24px', marginBottom: '16px' }}>
+                <div className="booking-mid" style={{ display: 'flex', alignItems: 'center', gap: '24px', marginBottom: '16px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#666' }}>
                     <Calendar size={14} color="#999" />
                     {formatDate(booking.schedule.departureTime)}

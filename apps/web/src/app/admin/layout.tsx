@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { useAuthStore } from '@/store/auth.store'
 import Link from 'next/link'
-import { Bus, MapPin, Calendar, Ticket, Users, LayoutDashboard, LogOut } from 'lucide-react'
+import { Menu, X, Bus, MapPin, Calendar, Ticket, Users, LayoutDashboard, LogOut } from 'lucide-react'
 
 const navItems = [
   { href: '/admin', label: 'Dashboard', icon: LayoutDashboard },
@@ -19,6 +19,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const pathname = usePathname()
   const { user, isAuthenticated, logout, loadFromStorage } = useAuthStore()
   const [checking, setChecking] = useState(true)
+  const [navOpen, setNavOpen] = useState(false)
 
   useEffect(() => {
     loadFromStorage()
@@ -49,8 +50,24 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', background: '#F8F8F8' }}>
+      {/* Top bar + backdrop (phones and small tablets only) */}
+      <div className="dash-topbar">
+        <button
+          aria-label="Open menu"
+          onClick={() => setNavOpen(true)}
+          style={{ background: 'none', border: 'none', color: 'white', display: 'flex', padding: '10px', cursor: 'pointer' }}
+        >
+          <Menu size={22} />
+        </button>
+        <span style={{ fontSize: '16px', fontWeight: 700, color: 'white' }}>
+          Ethio<span style={{ color: '#C0392B' }}>Bus</span>
+        </span>
+        <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.4)' }}>Admin Portal</span>
+      </div>
+      {navOpen && <div className="dash-backdrop" onClick={() => setNavOpen(false)} />}
+
       {/* Sidebar */}
-      <aside style={{ width: '240px', background: '#1A0A0A', display: 'flex', flexDirection: 'column', flexShrink: 0, position: 'fixed', top: 0, left: 0, height: '100vh' }}>
+      <aside className={`dash-sidebar${navOpen ? ' open' : ''}`} style={{ width: '240px', background: '#1A0A0A', display: 'flex', flexDirection: 'column', flexShrink: 0, position: 'fixed', top: 0, left: 0, height: '100vh' }}>
         {/* Logo */}
         <div style={{ padding: '28px 24px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
@@ -74,6 +91,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
               <Link
                 key={item.href}
                 href={item.href}
+                onClick={() => setNavOpen(false)}
                 style={{
                   display: 'flex', alignItems: 'center', gap: '10px',
                   padding: '10px 12px', borderRadius: '8px', marginBottom: '4px',
@@ -104,7 +122,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       </aside>
 
       {/* Main */}
-      <main style={{ flex: 1, marginLeft: '240px', padding: '32px 40px', minHeight: '100vh' }}>
+      <main className="dash-main" style={{ flex: 1, marginLeft: '240px', padding: '32px 40px', minHeight: '100vh' }}>
         {children}
       </main>
     </div>

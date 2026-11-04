@@ -99,13 +99,13 @@ export default function BookingDetailPage() {
     <div style={{ minHeight: '100vh', background: '#F8F8F8' }}>
       <Navbar />
 
-      <div style={{ maxWidth: '600px', margin: '0 auto', padding: '40px 24px' }}>
+      <div className="ticket-wrap" style={{ maxWidth: '600px', margin: '0 auto', padding: '40px 24px' }}>
 
         {/* E-Ticket Card */}
         <div style={{ background: 'white', borderRadius: '20px', overflow: 'hidden', boxShadow: '0 4px 24px rgba(0,0,0,0.08)' }}>
 
           {/* Header */}
-          <div style={{ background: '#1A0A0A', padding: '24px 28px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div className="ticket-pad" style={{ background: '#1A0A0A', padding: '24px 28px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <div style={{ width: '28px', height: '28px', background: '#C0392B', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <Bus size={14} color="white" />
@@ -121,10 +121,10 @@ export default function BookingDetailPage() {
           </div>
 
           {/* Route */}
-          <div style={{ padding: '28px', borderBottom: '1px dashed #E5E5E5' }}>
+          <div className="ticket-pad" style={{ padding: '28px', borderBottom: '1px dashed #E5E5E5' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div>
-                <div style={{ fontSize: '36px', fontWeight: 700, color: '#1a1a1a', lineHeight: 1 }}>
+                <div className="ticket-time" style={{ fontSize: '36px', fontWeight: 700, color: '#1a1a1a', lineHeight: 1 }}>
                   {formatTime(booking.schedule.departureTime)}
                 </div>
                 <div style={{ fontSize: '13px', color: '#999', marginTop: '6px', display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -142,7 +142,7 @@ export default function BookingDetailPage() {
               </div>
 
               <div style={{ textAlign: 'right' }}>
-                <div style={{ fontSize: '36px', fontWeight: 700, color: '#1a1a1a', lineHeight: 1 }}>
+                <div className="ticket-time" style={{ fontSize: '36px', fontWeight: 700, color: '#1a1a1a', lineHeight: 1 }}>
                   {formatTime(booking.schedule.arrivalTime)}
                 </div>
                 <div style={{ fontSize: '13px', color: '#999', marginTop: '6px', display: 'flex', alignItems: 'center', gap: '4px', justifyContent: 'flex-end' }}>
@@ -154,7 +154,7 @@ export default function BookingDetailPage() {
           </div>
 
           {/* Details */}
-          <div style={{ padding: '24px 28px', borderBottom: '1px dashed #E5E5E5' }}>
+          <div className="ticket-pad" style={{ padding: '24px 28px', borderBottom: '1px dashed #E5E5E5' }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
               {[
                 { label: 'DATE', value: formatDate(booking.schedule.departureTime), icon: <Calendar size={12} /> },
@@ -177,7 +177,7 @@ export default function BookingDetailPage() {
           </div>
 
           {/* QR Code */}
-          <div style={{ padding: '24px 28px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <div className="ticket-pad" style={{ padding: '24px 28px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
             <p style={{ fontSize: '12px', color: '#999', marginBottom: '16px' }}>Show this QR code when boarding</p>
             {booking.qrCode && (
               <img src={booking.qrCode} alt="QR Code" width={160} height={160} style={{ borderRadius: '12px', border: '1px solid #F0F0F0' }} />
@@ -189,7 +189,7 @@ export default function BookingDetailPage() {
         </div>
 
         {/* Actions */}
-        <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
+        <div className="ticket-actions" style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
           <button
             onClick={() => router.push('/bookings')}
             style={{ flex: 1, background: 'white', color: '#555', border: '1px solid #E5E5E5', padding: '14px', borderRadius: '12px', fontSize: '14px', fontWeight: 500, cursor: 'pointer' }}
