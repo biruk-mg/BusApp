@@ -113,11 +113,11 @@ export default function BookPage() {
       <Navbar />
 
       {/* Dark Header */}
-      <div style={{ background: '#1A0A0A', padding: '28px 80px' }}>
-        <div style={{ maxWidth: '900px', margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <div className="hero-pad" style={{ background: '#1A0A0A', padding: '28px 80px' }}>
+        <div className="book-head" style={{ maxWidth: '900px', margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
             <div>
-              <div style={{ fontSize: '28px', fontWeight: 700, color: 'white' }}>{formatTime(schedule.departureTime)}</div>
+              <div className="trip-time" style={{ fontSize: '28px', fontWeight: 700, color: 'white' }}>{formatTime(schedule.departureTime)}</div>
               <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.4)', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px' }}>
                 <MapPin size={10} />{schedule.route.fromCity}
               </div>
@@ -129,7 +129,7 @@ export default function BookPage() {
               </div>
             </div>
             <div>
-              <div style={{ fontSize: '28px', fontWeight: 700, color: 'white' }}>{formatTime(schedule.arrivalTime)}</div>
+              <div className="trip-time" style={{ fontSize: '28px', fontWeight: 700, color: 'white' }}>{formatTime(schedule.arrivalTime)}</div>
               <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.4)', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px' }}>
                 <MapPin size={10} />{schedule.route.toCity}
               </div>
@@ -142,16 +142,16 @@ export default function BookPage() {
         </div>
       </div>
 
-      <div style={{ maxWidth: '900px', margin: '0 auto', padding: '32px 80px' }}>
+      <div className="page-pad" style={{ maxWidth: '900px', margin: '0 auto', padding: '32px 80px' }}>
         {/* Seat Map */}
-        <div style={{ background: 'white', borderRadius: '16px', border: '1px solid #EEEEEE', padding: '28px', marginBottom: '20px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
+        <div className="seat-card" style={{ background: 'white', borderRadius: '16px', border: '1px solid #EEEEEE', padding: '28px', marginBottom: '20px' }}>
+          <div className="seat-head" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
             <div>
               <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#1a1a1a' }}>Select {passengers} Seat{passengers > 1 ? 's' : ''}</h2>
               <p style={{ fontSize: '13px', color: '#999', marginTop: '4px' }}>{selectedSeats.length} of {passengers} selected</p>
             </div>
             {/* Legend */}
-            <div style={{ display: 'flex', gap: '16px' }}>
+            <div className="seat-legend" style={{ display: 'flex', gap: '16px' }}>
               {[
                 { color: '#F5F5F5', border: '1px solid #E0E0E0', label: 'Available' },
                 { color: '#C0392B', border: 'none', label: 'Selected' },
@@ -172,7 +172,7 @@ export default function BookPage() {
           </div>
 
           {/* Seats — Real Bus Layout */}
-<div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxWidth: '260px' }}>
+<div className="seat-grid" style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxWidth: '260px' }}>
   {Array.from({ length: Math.ceil(allSeats.length / 4) }, (_, rowIndex) => {
     const left1 = allSeats[rowIndex * 4]
     const left2 = allSeats[rowIndex * 4 + 1]
@@ -232,6 +232,7 @@ export default function BookPage() {
 
         {/* Confirm Button */}
         <button
+          className="confirm-btn"
           onClick={handleBook}
           disabled={booking || selectedSeats.length !== passengers}
           style={{

@@ -36,17 +36,13 @@ export default function Navbar() {
           </span>
         </Link>
 {/* Desktop Nav */}
-        <div style={{ 
-          display: typeof window !== 'undefined' && window.innerWidth <= 768 ? 'none' : 'flex', 
-          alignItems: 'center', 
-          gap: '32px' 
-        }}>
+        <div className="nav-links" style={{ display: 'flex', alignItems: 'center', gap: '32px' }}>
           <Link href="/search" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>Routes</Link>
           <Link href="/#why" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>About</Link>
         </div>
 
-        {/* Desktop Auth */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        {/* Auth (desktop only, phones use the menu) */}
+        <div className="nav-auth" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           {isAuthenticated ? (
             <>
               <Link href="/bookings" style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', color: '#666', textDecoration: 'none' }}>
@@ -57,7 +53,7 @@ export default function Navbar() {
                   onClick={() => router.push('/bookings')}>
                   <User size={15} color="white" />
                 </div>
-                <span style={{ fontSize: '14px', fontWeight: 500, display: window?.innerWidth > 640 ? 'block' : 'none' }}>
+                <span className="nav-username" style={{ fontSize: '14px', fontWeight: 500 }}>
                   {user?.name?.split(' ')[0] ?? ''}
                 </span>
               </div>
@@ -79,20 +75,22 @@ export default function Navbar() {
               </Link>
             </>
           )}
-
-          {/* Mobile Menu Button */}
-          <button
-            onClick={() => setMenuOpen(!menuOpen)}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px', display: 'flex', alignItems: 'center', color: '#666' }}
-          >
-            {menuOpen ? <X size={22} /> : <Menu size={22} />}
-          </button>
         </div>
+
+        {/* Menu button (phones and tablets only) */}
+        <button
+          className="nav-burger"
+          aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+          onClick={() => setMenuOpen(!menuOpen)}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '8px', display: 'flex', alignItems: 'center', color: '#666' }}
+        >
+          {menuOpen ? <X size={24} /> : <Menu size={24} />}
+        </button>
       </div>
 
       {/* Mobile Menu */}
       {menuOpen && (
-        <div style={{ background: 'white', borderTop: '1px solid #F0F0F0', padding: '16px clamp(16px, 4vw, 80px)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+        <div className="nav-mobile" style={{ background: 'white', borderTop: '1px solid #F0F0F0', padding: '16px clamp(16px, 4vw, 80px)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
           <Link href="/search" onClick={() => setMenuOpen(false)}
             style={{ padding: '12px 0', fontSize: '15px', color: '#333', textDecoration: 'none', borderBottom: '1px solid #F5F5F5', display: 'flex', alignItems: 'center', gap: '8px' }}>
             🚌 Find Buses

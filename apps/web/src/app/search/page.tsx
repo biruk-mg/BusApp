@@ -73,15 +73,15 @@ function SearchResults() {
 
   return (
     <>
-      <div style={{ background: '#1A0A0A', padding: '32px 80px' }}>
+      <div className="hero-pad" style={{ background: '#1A0A0A', padding: '32px 80px' }}>
         <div style={{ maxWidth: '900px', margin: '0 auto' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '10px' }}>
+          <div className="route-title" style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '10px' }}>
             <MapPin size={16} color="#C0392B" />
             <span style={{ fontSize: '24px', fontWeight: 700, color: 'white' }}>{fromCity}</span>
             <ArrowRight size={20} color="#D4A017" />
             <span style={{ fontSize: '24px', fontWeight: 700, color: 'white' }}>{toCity}</span>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+          <div className="route-meta" style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
             <span style={{ fontSize: '13px', color: 'rgba(255,255,255,0.4)' }}>{date}</span>
             <div style={{ width: '4px', height: '4px', borderRadius: '50%', background: 'rgba(255,255,255,0.2)' }} />
             <span style={{ fontSize: '13px', color: 'rgba(255,255,255,0.4)', display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -95,7 +95,7 @@ function SearchResults() {
         </div>
       </div>
 
-      <div style={{ maxWidth: '900px', margin: '0 auto', padding: '32px 80px' }}>
+      <div className="page-pad" style={{ maxWidth: '900px', margin: '0 auto', padding: '32px 80px' }}>
         {loading && (
           <div style={{ textAlign: 'center', padding: '80px 0' }}>
             <Bus size={40} color="#E0E0E0" style={{ display: 'block', margin: '0 auto 12px' }} />
@@ -129,7 +129,7 @@ function SearchResults() {
         )}
 
         {!loading && !error && schedules.length > 0 && (
-          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '20px' }}>
+          <div className="filter-bar" style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '20px' }}>
             <select
               value={busTypeFilter}
               onChange={(e) => setBusTypeFilter(e.target.value)}
@@ -171,12 +171,13 @@ function SearchResults() {
           {visible.map((schedule) => (
             <div
               key={schedule.id}
+              className="result-card"
               style={{ background: 'white', borderRadius: '16px', border: '1px solid #EEEEEE', padding: '28px 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
             >
               <div style={{ flex: 1 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '32px', marginBottom: '20px' }}>
+                <div className="trip-times" style={{ display: 'flex', alignItems: 'center', gap: '32px', marginBottom: '20px' }}>
                   <div>
-                    <div style={{ fontSize: '32px', fontWeight: 700, color: '#1a1a1a', lineHeight: 1 }}>
+                    <div className="trip-time" style={{ fontSize: '32px', fontWeight: 700, color: '#1a1a1a', lineHeight: 1 }}>
                       {formatTime(schedule.departureTime)}
                     </div>
                     <div style={{ fontSize: '13px', color: '#999', marginTop: '4px' }}>{fromCity}</div>
@@ -198,14 +199,14 @@ function SearchResults() {
                   </div>
 
                   <div>
-                    <div style={{ fontSize: '32px', fontWeight: 700, color: '#1a1a1a', lineHeight: 1 }}>
+                    <div className="trip-time" style={{ fontSize: '32px', fontWeight: 700, color: '#1a1a1a', lineHeight: 1 }}>
                       {formatTime(schedule.arrivalTime)}
                     </div>
                     <div style={{ fontSize: '13px', color: '#999', marginTop: '4px' }}>{toCity}</div>
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingTop: '16px', borderTop: '1px solid #F5F5F5' }}>
+                <div className="trip-meta" style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingTop: '16px', borderTop: '1px solid #F5F5F5' }}>
                   <span style={{ background: '#FEF2F2', color: '#C0392B', fontSize: '11px', fontWeight: 600, padding: '4px 12px', borderRadius: '20px' }}>
                     {schedule.bus.operator.companyName}
                   </span>
@@ -216,7 +217,7 @@ function SearchResults() {
                 </div>
               </div>
 
-              <div style={{ paddingLeft: '32px', borderLeft: '1px solid #F0F0F0', marginLeft: '32px', textAlign: 'right', minWidth: '160px' }}>
+              <div className="result-price" style={{ paddingLeft: '32px', borderLeft: '1px solid #F0F0F0', marginLeft: '32px', textAlign: 'right', minWidth: '160px' }}>
                 <div style={{ fontSize: '30px', fontWeight: 700, color: '#C0392B', marginBottom: '4px' }}>
                   {formatPrice(schedule.price)}
                 </div>

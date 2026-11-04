@@ -25,3 +25,82 @@ body {
   background: #ffffff;
   color: #1a1a1a;
 }
+
+
+/* ==========================================================================
+   Responsive layer
+   Most pages are styled with inline styles, which cannot use media queries.
+   These rules (with !important) adapt them on small screens. Desktop is
+   unchanged because every rule below only applies under a max-width.
+   ========================================================================== */
+
+/* Prevent iOS from zooming into small inputs */
+@media (max-width: 768px) {
+  input, select, textarea { font-size: 16px !important; }
+}
+
+/* ---- Navbar ---- */
+.nav-burger { display: none !important; }
+@media (max-width: 768px) {
+  .nav-links, .nav-auth { display: none !important; }
+  .nav-burger { display: flex !important; }
+}
+@media (min-width: 769px) { .nav-mobile { display: none !important; } }
+@media (max-width: 640px) { .nav-username { display: none !important; } }
+
+/* ---- Login / Register ---- */
+.auth-brand-mobile { display: none !important; }
+@media (max-width: 900px) {
+  .auth-side { display: none !important; }
+  .auth-brand-mobile { display: flex !important; }
+  .auth-main { padding: 32px 20px !important; }
+}
+
+/* ---- Shared page spacing (search, booking) ---- */
+@media (max-width: 768px) {
+  .hero-pad { padding: 20px 16px !important; }
+  .page-pad { padding: 20px 16px !important; }
+  .trip-time { font-size: 22px !important; }
+}
+
+/* ---- Search ---- */
+@media (max-width: 768px) {
+  .route-title { flex-wrap: wrap !important; gap: 8px !important; }
+  .route-title > span { font-size: 20px !important; }
+  .route-meta { flex-wrap: wrap !important; gap: 8px 12px !important; }
+  .filter-bar { gap: 8px !important; }
+  .filter-bar select { flex: 1 1 140px; min-width: 0; }
+  .result-card {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    padding: 20px 16px !important;
+  }
+  .trip-times { gap: 12px !important; }
+  .trip-meta { flex-wrap: wrap !important; gap: 8px !important; }
+  .result-price {
+    border-left: none !important;
+    margin-left: 0 !important;
+    padding-left: 0 !important;
+    margin-top: 16px !important;
+    padding-top: 16px !important;
+    border-top: 1px solid #F0F0F0 !important;
+    min-width: 0 !important;
+    text-align: left !important;
+  }
+}
+
+/* ---- Booking / seat selection ---- */
+@media (max-width: 768px) {
+  .book-head { flex-wrap: wrap !important; gap: 16px !important; }
+  .seat-card { padding: 20px 16px !important; }
+  .seat-head { flex-wrap: wrap !important; gap: 12px !important; }
+  .seat-legend { flex-wrap: wrap !important; gap: 10px 14px !important; }
+  .seat-grid { margin: 0 auto !important; }
+  /* Keep the confirm button reachable with a thumb */
+  .confirm-btn {
+    position: sticky !important;
+    bottom: 12px;
+    z-index: 50;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  }
+}

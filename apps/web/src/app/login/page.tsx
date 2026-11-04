@@ -37,7 +37,7 @@ export default function LoginPage() {
   return (
     <div style={{ minHeight: '100vh', display: 'flex' }}>
       {/* Left Panel */}
-      <div style={{ width: '420px', background: '#1A0A0A', padding: '48px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', flexShrink: 0 }}>
+      <div className="auth-side" style={{ width: '420px', background: '#1A0A0A', padding: '48px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', flexShrink: 0 }}>
         <div>
           <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none', marginBottom: '64px' }}>
             <div style={{ width: '32px', height: '32px', background: '#C0392B', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -68,8 +68,16 @@ export default function LoginPage() {
       </div>
 
       {/* Right Panel */}
-      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '48px', background: '#F8F8F8' }}>
+      <div className="auth-main" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '48px', background: '#F8F8F8' }}>
         <div style={{ width: '100%', maxWidth: '400px' }}>
+          <Link href="/" className="auth-brand-mobile" style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none', marginBottom: '32px' }}>
+            <div style={{ width: '32px', height: '32px', background: '#C0392B', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Bus size={16} color="white" />
+            </div>
+            <span style={{ fontSize: '18px', fontWeight: 700, color: '#1a1a1a' }}>
+              Ethio<span style={{ color: '#C0392B' }}>Bus</span>
+            </span>
+          </Link>
           <h1 style={{ fontSize: '28px', fontWeight: 700, color: '#1a1a1a', marginBottom: '8px' }}>
             Welcome back
           </h1>
