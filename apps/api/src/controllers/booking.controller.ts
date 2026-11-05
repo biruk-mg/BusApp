@@ -3,6 +3,7 @@ import { z } from 'zod'
 import QRCode from 'qrcode'
 import { prisma } from '../lib/prisma'
 import { AuthRequest } from '../middleware/auth'
+import { HOLD_MINUTES, activeBookingFilter, releaseExpiredHolds, seatLabels } from '../lib/seats'
 
 // ─── Validation ─────────────────────────────────────────
 const createBookingSchema = z.object({
@@ -22,6 +23,11 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
     const { scheduleId, seatNumbers } = parsed.data
     const userId = req.userId!
 
+    if (new Set(seatNumbers).size !== seatNumbers.length) {
+      res.status(400).json({ success: false, error: 'Each seat can only be selected once' })
+      return
+    }
+
     // Get schedule with bus info
     const schedule = await prisma.schedule.findUnique({
       where: { id: scheduleId },
@@ -39,18 +45,30 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
       return
     }
 
-    // Use transaction to prevent double booking
+    // Only seats that exist on this bus can be booked
+    const validSeats = new Set(seatLabels(schedule.bus.totalSeats))
+    const unknownSeat = seatNumbers.find((seat) => !validSeats.has(seat))
+    if (unknownSeat) {
+      res.status(400).json({ success: false, error: `Seat ${unknownSeat} does not exist on this bus` })
+      return
+    }
+
+    const now = new Date()
+
     const booking = await prisma.$transaction(async (tx) => {
-      // Get all booked seats for this schedule
+      // One booking at a time per trip: this lock is what stops two people
+      // from taking the same seat at the same moment.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${scheduleId}))`
+
+      // Free seats held by unpaid bookings that ran out of time
+      await releaseExpiredHolds(tx, { scheduleId }, now)
+
+      // Seats held by paid bookings and by unpaid bookings still inside their hold
       const existingBookings = await tx.booking.findMany({
-        where: {
-          scheduleId,
-          status: { in: ['PENDING', 'CONFIRMED'] },
-        },
+        where: { scheduleId, ...activeBookingFilter(now) },
         select: { seatNumbers: true },
       })
 
-      // Flatten all booked seat numbers
       const bookedSeats = existingBookings.flatMap((b) => b.seatNumbers)
 
       // Check if any requested seat is already booked
@@ -65,21 +83,23 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
         throw new Error('Not enough seats available')
       }
 
-      // Calculate total price
+      // Calculate total price (always on the server, never trusted from the client)
       const totalPrice = schedule.price * seatNumbers.length
 
       // Generate unique QR code data
       const qrData = `BUS-${scheduleId}-${userId}-${Date.now()}`
       const qrCode = await QRCode.toDataURL(qrData)
 
-      // Create booking
-      const newBooking = await tx.booking.create({
+      // Seats are reserved, not confirmed: the booking becomes CONFIRMED only
+      // when Chapa confirms the payment.
+      return tx.booking.create({
         data: {
           userId,
           scheduleId,
           seatNumbers,
           totalPrice,
-          status: 'CONFIRMED',
+          status: 'PENDING',
+          expiresAt: new Date(now.getTime() + HOLD_MINUTES * 60 * 1000),
           qrCode,
         },
         include: {
@@ -88,13 +108,11 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
           },
         },
       })
-
-      return newBooking
     })
 
     res.status(201).json({
       success: true,
-      message: 'Booking confirmed!',
+      message: `Seats reserved. Complete payment within ${HOLD_MINUTES} minutes to confirm your booking.`,
       data: { booking },
     })
   } catch (error) {
@@ -112,6 +130,8 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
 export const getMyBookings = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const userId = req.userId!
+
+    await releaseExpiredHolds(prisma, { userId })
 
     const bookings = await prisma.booking.findMany({
       where: { userId },
@@ -136,6 +156,8 @@ export const getBooking = async (req: AuthRequest, res: Response): Promise<void>
   try {
     const id = req.params.id as string
     const userId = req.userId!
+
+    await releaseExpiredHolds(prisma, { id })
 
     const booking = await prisma.booking.findUnique({
       where: { id },

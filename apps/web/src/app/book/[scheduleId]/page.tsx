@@ -50,11 +50,8 @@ export default function BookPage() {
         const allRes = await api.get('/schedules')
         const found = allRes.data.data.schedules.find((s: ScheduleDetail) => s.id === scheduleId)
         if (found) setSchedule(found)
-        const bookingsRes = await api.get('/bookings/my').catch(() => ({ data: { data: { bookings: [] } } }))
-        const booked = bookingsRes.data.data.bookings
-          .filter((b: BookingSeat) => b.scheduleId === scheduleId && b.status !== 'CANCELLED')
-          .flatMap((b: BookingSeat) => b.seatNumbers)
-        setBookedSeats(booked)
+        const seatsRes = await api.get(`/schedules/${scheduleId}/seats`)
+        setBookedSeats(seatsRes.data.data.bookedSeats)
       } catch { toast.error('Failed to load schedule') }
       finally { setLoading(false) }
     }
@@ -86,7 +83,7 @@ export default function BookPage() {
     setBooking(true)
     try {
       const res = await api.post('/bookings', { scheduleId, seatNumbers: selectedSeats })
-      toast.success('Booking confirmed!')
+      toast.success('Seats reserved. Complete your payment to confirm.')
       router.push(`/bookings/${res.data.data.booking.id}`)
     } catch (err: unknown) {
       const error = err as { response?: { data?: { error?: string } } }
@@ -243,8 +240,8 @@ export default function BookPage() {
             transition: 'all 0.2s',
           }}
         >
-          {booking ? 'Confirming...' : selectedSeats.length === passengers
-            ? `Confirm Booking — ${formatPrice(schedule.price * passengers)}`
+          {booking ? 'Reserving...' : selectedSeats.length === passengers
+            ? `Reserve Seats — ${formatPrice(schedule.price * passengers)}`
             : `Select ${passengers - selectedSeats.length} more seat${passengers - selectedSeats.length > 1 ? 's' : ''}`
           }
         </button>

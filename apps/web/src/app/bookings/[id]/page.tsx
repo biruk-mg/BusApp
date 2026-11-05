@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
 import Navbar from '@/components/Navbar'
@@ -15,6 +15,7 @@ interface BookingDetail {
   status: string
   qrCode: string
   createdAt: string
+  expiresAt?: string | null
   payment?: { status: string } | null
   schedule: {
     departureTime: string
@@ -31,21 +32,68 @@ export default function BookingDetailPage() {
   const [booking, setBooking] = useState<BookingDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [confirming, setConfirming] = useState(false)
+  const [now, setNow] = useState(() => Date.now())
+  const expiryReloaded = useRef(false)
+
+  const loadBooking = useCallback(async (): Promise<BookingDetail | null> => {
+    try {
+      const res = await api.get(`/bookings/${id}`)
+      setBooking(res.data.data.booking)
+      return res.data.data.booking as BookingDetail
+    } catch {
+      setError('Booking not found')
+      toast.error('Booking not found')
+      return null
+    } finally {
+      setLoading(false)
+    }
+  }, [id])
+
+  // Ask the server to check the payment with Chapa. After coming back from the
+  // payment page we retry a few times, because Chapa can take a moment.
+  const checkPayment = useCallback(async (attempts: number) => {
+    setConfirming(true)
+    for (let i = 0; i < attempts; i++) {
+      try {
+        const res = await api.post(`/payments/verify-booking/${id}`)
+        const status = res.data.data?.status
+        if (status === 'SUCCESS') { toast.success('Payment received!'); break }
+        if (status === 'FAILED' || status === 'NO_PAYMENT') break
+      } catch { /* try again */ }
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, 3000))
+    }
+    await loadBooking()
+    setConfirming(false)
+  }, [id, loadBooking])
 
   useEffect(() => {
-    const fetchBooking = async () => {
-      try {
-        const res = await api.get(`/bookings/${id}`)
-        setBooking(res.data.data.booking)
-      } catch {
-        setError('Booking not found')
-        toast.error('Booking not found')
-      } finally {
-        setLoading(false)
-      }
+    if (!id) return
+    ;(async () => {
+      const b = await loadBooking()
+      if (!b || b.status === 'CANCELLED' || b.payment?.status === 'SUCCESS') return
+      const returnedFromPayment = new URLSearchParams(window.location.search).get('payment') === 'success'
+      if (returnedFromPayment) checkPayment(5)
+      else if (b.payment?.status === 'PENDING') checkPayment(1)
+    })()
+  }, [id, loadBooking, checkPayment])
+
+  // Clock for the seat-hold countdown
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [])
+
+  // When the hold runs out, reload once so the page shows the real status
+  useEffect(() => {
+    if (
+      booking?.status === 'PENDING' && booking.expiresAt && !confirming &&
+      !expiryReloaded.current && now > new Date(booking.expiresAt).getTime()
+    ) {
+      expiryReloaded.current = true
+      loadBooking()
     }
-    if (id) fetchBooking()
-  }, [id, router])
+  }, [now, booking, confirming, loadBooking])
 
   const handlePayNow = async () => {
     try {
@@ -89,6 +137,10 @@ export default function BookingDetailPage() {
   )
 
   const isPaid = booking.payment?.status === 'SUCCESS'
+  const msLeft = booking.expiresAt ? new Date(booking.expiresAt).getTime() - now : null
+  const holdLabel = msLeft !== null && msLeft > 0
+    ? `${Math.floor(msLeft / 60000)}:${String(Math.floor((msLeft % 60000) / 1000)).padStart(2, '0')}`
+    : null
   const statusColor = booking.status === 'CONFIRMED'
     ? { bg: '#F0FFF4', color: '#2E8B57' }
     : booking.status === 'CANCELLED'
@@ -100,6 +152,26 @@ export default function BookingDetailPage() {
       <Navbar />
 
       <div className="ticket-wrap" style={{ maxWidth: '600px', margin: '0 auto', padding: '40px 24px' }}>
+
+        {booking.status === 'PENDING' && !isPaid && (
+          <div style={{ background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '12px', padding: '14px 16px', marginBottom: '16px', fontSize: '13px', color: '#92400E', lineHeight: 1.5 }}>
+            {confirming
+              ? 'Checking your payment…'
+              : holdLabel
+              ? <>Your seats are held for <strong>{holdLabel}</strong>. Pay now to confirm your booking.</>
+              : 'Your hold on these seats is ending. Refresh to see the latest status.'}
+          </div>
+        )}
+        {booking.status === 'CANCELLED' && !isPaid && (
+          <div style={{ background: '#FFF5F5', border: '1px solid #FECACA', borderRadius: '12px', padding: '14px 16px', marginBottom: '16px', fontSize: '13px', color: '#991B1B', lineHeight: 1.5 }}>
+            This booking expired or was cancelled. Please choose your seats again.
+          </div>
+        )}
+        {booking.status === 'CANCELLED' && isPaid && (
+          <div style={{ background: '#FFF5F5', border: '1px solid #FECACA', borderRadius: '12px', padding: '14px 16px', marginBottom: '16px', fontSize: '13px', color: '#991B1B', lineHeight: 1.5 }}>
+            We received your payment, but these seats were taken before it was confirmed. Please contact support to get a refund.
+          </div>
+        )}
 
         {/* E-Ticket Card */}
         <div style={{ background: 'white', borderRadius: '20px', overflow: 'hidden', boxShadow: '0 4px 24px rgba(0,0,0,0.08)' }}>
@@ -116,7 +188,7 @@ export default function BookingDetailPage() {
               </span>
             </div>
             <span style={{ fontSize: '11px', fontWeight: 600, padding: '5px 12px', borderRadius: '20px', background: statusColor.bg, color: statusColor.color }}>
-              {booking.status}
+              {booking.status === 'PENDING' ? 'AWAITING PAYMENT' : booking.status}
             </span>
           </div>
 
@@ -162,7 +234,7 @@ export default function BookingDetailPage() {
                 { label: 'BUS TYPE', value: booking.schedule.bus.busType, icon: null },
                 { label: 'OPERATOR', value: booking.schedule.bus.operator.companyName, icon: null },
                 { label: 'PLATE', value: booking.schedule.bus.plateNumber, icon: null },
-                { label: 'TOTAL PAID', value: formatPrice(booking.totalPrice), icon: null, highlight: true },
+                { label: isPaid ? 'TOTAL PAID' : 'TOTAL DUE', value: formatPrice(booking.totalPrice), icon: null, highlight: true },
               ].map(item => (
                 <div key={item.label}>
                   <div style={{ fontSize: '10px', color: '#bbb', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -178,9 +250,17 @@ export default function BookingDetailPage() {
 
           {/* QR Code */}
           <div className="ticket-pad" style={{ padding: '24px 28px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-            <p style={{ fontSize: '12px', color: '#999', marginBottom: '16px' }}>Show this QR code when boarding</p>
-            {booking.qrCode && (
-              <img src={booking.qrCode} alt="QR Code" width={160} height={160} style={{ borderRadius: '12px', border: '1px solid #F0F0F0' }} />
+            {isPaid && booking.status === 'CONFIRMED' ? (
+              <>
+                <p style={{ fontSize: '12px', color: '#999', marginBottom: '16px' }}>Show this QR code when boarding</p>
+                {booking.qrCode && (
+                  <img src={booking.qrCode} alt="QR Code" width={160} height={160} style={{ borderRadius: '12px', border: '1px solid #F0F0F0' }} />
+                )}
+              </>
+            ) : (
+              <p style={{ fontSize: '13px', color: '#999', textAlign: 'center', padding: '12px 0' }}>
+                Your boarding QR code appears here once payment is confirmed.
+              </p>
             )}
             <p style={{ fontSize: '11px', color: '#bbb', marginTop: '12px', fontFamily: 'monospace' }}>
               {booking.id.slice(0, 24)}...
@@ -197,16 +277,17 @@ export default function BookingDetailPage() {
             My Bookings
           </button>
 
-          {booking.status === 'CONFIRMED' && !isPaid && (
+          {booking.status !== 'CANCELLED' && !isPaid && (
             <button
               onClick={handlePayNow}
-              style={{ flex: 1, background: '#2E8B57', color: 'white', border: 'none', padding: '14px', borderRadius: '12px', fontSize: '14px', fontWeight: 700, cursor: 'pointer' }}
+              disabled={confirming}
+              style={{ flex: 1, background: '#2E8B57', color: 'white', border: 'none', padding: '14px', borderRadius: '12px', fontSize: '14px', fontWeight: 700, cursor: confirming ? 'default' : 'pointer', opacity: confirming ? 0.6 : 1 }}
             >
               💳 Pay Now
             </button>
           )}
 
-          {booking.status === 'CONFIRMED' && (
+          {(booking.status === 'CONFIRMED' || booking.status === 'PENDING') && (
             <button
               onClick={handleCancel}
               style={{ flex: 1, background: '#FFF5F5', color: '#C0392B', border: '1px solid #FECACA', padding: '14px', borderRadius: '12px', fontSize: '14px', fontWeight: 500, cursor: 'pointer' }}

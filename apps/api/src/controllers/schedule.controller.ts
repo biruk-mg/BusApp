@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma'
 import { AuthRequest } from '../middleware/auth'
 import { getOperatorForUser } from '../lib/operator'
+import { activeBookingFilter, releaseExpiredHolds } from '../lib/seats'
 
 const createScheduleSchema = z.object({
   routeId: z.string(),
@@ -68,9 +69,9 @@ export const searchSchedules = async (req: Request, res: Response): Promise<void
         route: true,
         bus: { include: { operator: true } },
         _count: { select: { bookings: true } },
-        // Seats held by active bookings (same statuses the booking flow blocks)
+        // Seats held by paid bookings and unpaid bookings still inside their hold
         bookings: {
-          where: { status: { in: ['PENDING', 'CONFIRMED'] } },
+          where: activeBookingFilter(now),
           select: { seatNumbers: true },
         },
       },
@@ -219,6 +220,37 @@ export const deleteSchedule = async (req: AuthRequest, res: Response): Promise<v
     res.json({ success: true, message: 'Schedule deleted' })
   } catch (error) {
     console.error('DeleteSchedule error:', error)
+    res.status(500).json({ success: false, error: 'Internal server error' })
+  }
+}
+
+// ─── Seat map data for one trip (public) ─────────────────
+// Returns which seats are taken, for everyone. No passenger details.
+export const getScheduleSeats = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const id = req.params.id as string
+    const schedule = await prisma.schedule.findUnique({ where: { id }, include: { bus: true } })
+    if (!schedule) {
+      res.status(404).json({ success: false, error: 'Schedule not found' })
+      return
+    }
+
+    await releaseExpiredHolds(prisma, { scheduleId: id })
+
+    const bookings = await prisma.booking.findMany({
+      where: { scheduleId: id, ...activeBookingFilter() },
+      select: { seatNumbers: true },
+    })
+
+    res.json({
+      success: true,
+      data: {
+        totalSeats: schedule.bus.totalSeats,
+        bookedSeats: bookings.flatMap((b) => b.seatNumbers),
+      },
+    })
+  } catch (error) {
+    console.error('GetScheduleSeats error:', error)
     res.status(500).json({ success: false, error: 'Internal server error' })
   }
 }

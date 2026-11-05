@@ -126,7 +126,7 @@ export default function BookingsPage() {
                     </span>
                   </div>
                   <span style={{ fontSize: '11px', fontWeight: 600, padding: '4px 12px', borderRadius: '20px', background: s.bg, color: s.color }}>
-                    {booking.status}
+                    {booking.status === 'PENDING' ? 'AWAITING PAYMENT' : booking.status}
                   </span>
                 </div>
 
