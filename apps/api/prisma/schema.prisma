@@ -24,6 +24,7 @@ model Operator {
   licenseNo   String  @unique
   phone       String
   buses       Bus[]
+  pickupPoints PickupPoint[]
   createdAt   DateTime @default(now())
 }
 
@@ -45,6 +46,7 @@ model Route {
   distanceKm          Float
   estimatedDurationMin Int
   schedules           Schedule[]
+  pickupPoints        PickupPoint[]
   createdAt           DateTime   @default(now())
 
   @@unique([fromCity, toCity])
@@ -75,6 +77,10 @@ model Booking {
   qrCode      String        @unique
   payment     Payment?
   expiresAt   DateTime?
+  pickupPointId  String?
+  pickupPoint    PickupPoint? @relation("BookingPickup", fields: [pickupPointId], references: [id], onDelete: Restrict)
+  dropoffPointId String?
+  dropoffPoint   PickupPoint? @relation("BookingDropoff", fields: [dropoffPointId], references: [id], onDelete: Restrict)
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 }
@@ -121,4 +127,31 @@ enum PaymentStatus {
   PENDING
   SUCCESS
   FAILED
+}
+
+enum PickupKind {
+  PICKUP
+  DROPOFF
+  BOTH
+}
+
+// Where passengers board (or get off) along a route, for one operator.
+// offsetMin = minutes after the trip's departure from the main station.
+model PickupPoint {
+  id         String     @id @default(cuid())
+  operatorId String
+  operator   Operator   @relation(fields: [operatorId], references: [id], onDelete: Cascade)
+  routeId    String
+  route      Route      @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  name       String
+  kind       PickupKind @default(PICKUP)
+  sequence   Int        @default(0)
+  offsetMin  Int        @default(0)
+  createdAt  DateTime   @default(now())
+
+  pickupBookings  Booking[] @relation("BookingPickup")
+  dropoffBookings Booking[] @relation("BookingDropoff")
+
+  @@unique([operatorId, routeId, name])
+  @@index([operatorId, routeId])
 }

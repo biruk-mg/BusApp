@@ -7,6 +7,8 @@ import { HOLD_MINUTES, activeBookingFilter, releaseExpiredHolds, seatLabels } fr
 
 // ─── Validation ─────────────────────────────────────────
 const createBookingSchema = z.object({
+  pickupPointId: z.string().optional(),
+  dropoffPointId: z.string().optional(),
   scheduleId: z.string(),
   seatNumbers: z.array(z.string()).min(1).max(10),
 })
@@ -21,6 +23,8 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
     }
 
     const { scheduleId, seatNumbers } = parsed.data
+    const pickupPointId = parsed.data.pickupPointId || undefined
+    const dropoffPointId = parsed.data.dropoffPointId || undefined
     const userId = req.userId!
 
     if (new Set(seatNumbers).size !== seatNumbers.length) {
@@ -50,6 +54,32 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
     const unknownSeat = seatNumbers.find((seat) => !validSeats.has(seat))
     if (unknownSeat) {
       res.status(400).json({ success: false, error: `Seat ${unknownSeat} does not exist on this bus` })
+      return
+    }
+
+    // Pickup is required when this operator has pickup points on this route;
+    // drop-off is always optional (passengers can also ask the driver).
+    const points = await prisma.pickupPoint.findMany({
+      where: { operatorId: schedule.bus.operatorId, routeId: schedule.routeId },
+    })
+    const pickupOptions = points.filter((p) => p.kind !== 'DROPOFF')
+    const dropoffOptions = points.filter((p) => p.kind !== 'PICKUP')
+
+    if (pickupOptions.length > 0) {
+      if (!pickupPointId) {
+        res.status(400).json({ success: false, error: 'Please choose your pickup point' })
+        return
+      }
+      if (!pickupOptions.some((p) => p.id === pickupPointId)) {
+        res.status(400).json({ success: false, error: 'That pickup point is not available for this trip' })
+        return
+      }
+    } else if (pickupPointId) {
+      res.status(400).json({ success: false, error: 'That pickup point is not available for this trip' })
+      return
+    }
+    if (dropoffPointId && !dropoffOptions.some((p) => p.id === dropoffPointId)) {
+      res.status(400).json({ success: false, error: 'That drop-off point is not available for this trip' })
       return
     }
 
@@ -100,9 +130,13 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
           totalPrice,
           status: 'PENDING',
           expiresAt: new Date(now.getTime() + HOLD_MINUTES * 60 * 1000),
+          pickupPointId: pickupPointId ?? null,
+          dropoffPointId: dropoffPointId ?? null,
           qrCode,
         },
         include: {
+          pickupPoint: true,
+          dropoffPoint: true,
           schedule: {
             include: { route: true, bus: true },
           },
@@ -162,6 +196,8 @@ export const getBooking = async (req: AuthRequest, res: Response): Promise<void>
     const booking = await prisma.booking.findUnique({
       where: { id },
       include: {
+        pickupPoint: true,
+        dropoffPoint: true,
         schedule: {
           include: { route: true, bus: { include: { operator: true } } },
         },

@@ -242,11 +242,19 @@ export const getScheduleSeats = async (req: Request, res: Response): Promise<voi
       select: { seatNumbers: true },
     })
 
+    const points = await prisma.pickupPoint.findMany({
+      where: { operatorId: schedule.bus.operatorId, routeId: schedule.routeId },
+      orderBy: [{ sequence: 'asc' }, { offsetMin: 'asc' }],
+      select: { id: true, name: true, kind: true, sequence: true, offsetMin: true },
+    })
+
     res.json({
       success: true,
       data: {
         totalSeats: schedule.bus.totalSeats,
         bookedSeats: bookings.flatMap((b) => b.seatNumbers),
+        pickupPoints: points.filter((p) => p.kind !== 'DROPOFF'),
+        dropoffPoints: points.filter((p) => p.kind !== 'PICKUP'),
       },
     })
   } catch (error) {

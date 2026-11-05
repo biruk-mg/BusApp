@@ -37,8 +37,8 @@ export default function Navbar() {
         </Link>
 {/* Desktop Nav */}
         <div className="nav-links" style={{ display: 'flex', alignItems: 'center', gap: '32px' }}>
-          <Link href="/search" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>Routes</Link>
-          <Link href="/#why" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>About</Link>
+          <Link href="/routes" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>Routes</Link>
+          <Link href="/about" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>About</Link>
         </div>
 
         {/* Auth (desktop only, phones use the menu) */}
@@ -94,6 +94,14 @@ export default function Navbar() {
           <Link href="/search" onClick={() => setMenuOpen(false)}
             style={{ padding: '12px 0', fontSize: '15px', color: '#333', textDecoration: 'none', borderBottom: '1px solid #F5F5F5', display: 'flex', alignItems: 'center', gap: '8px' }}>
             🚌 Find Buses
+          </Link>
+          <Link href="/routes" onClick={() => setMenuOpen(false)}
+            style={{ padding: '12px 0', fontSize: '15px', color: '#333', textDecoration: 'none', borderBottom: '1px solid #F5F5F5', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            🗺️ Routes
+          </Link>
+          <Link href="/about" onClick={() => setMenuOpen(false)}
+            style={{ padding: '12px 0', fontSize: '15px', color: '#333', textDecoration: 'none', borderBottom: '1px solid #F5F5F5', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            ℹ️ About
           </Link>
           {isAuthenticated ? (
             <>

@@ -12,6 +12,8 @@ interface Booking {
   totalPrice: number
   status: string
   user: { name: string; phone: string }
+  pickupPoint?: { name: string; sequence: number; offsetMin: number } | null
+  dropoffPoint?: { name: string } | null
   schedule: {
     departureTime: string
     route: { fromCity: string; toCity: string }
@@ -61,13 +63,13 @@ export default function OperatorBookingsPage() {
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: '#FAFAFA' }}>
-              {['Passenger', 'Route', 'Date', 'Seats', 'Amount', 'Status'].map(h => (
+              {['Passenger', 'Route', 'Date', 'Pickup', 'Seats', 'Amount', 'Status'].map(h => (
                 <th key={h} style={{ textAlign: 'left', padding: '14px 20px', fontSize: '12px', color: '#999', fontWeight: 500 }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {loading && <tr><td colSpan={6} style={{ textAlign: 'center', padding: '40px', color: '#999' }}>Loading...</td></tr>}
+            {loading && <tr><td colSpan={7} style={{ textAlign: 'center', padding: '40px', color: '#999' }}>Loading...</td></tr>}
             {bookings.map((booking) => {
               const s = statusStyle(booking.status)
               return (
@@ -82,6 +84,15 @@ export default function OperatorBookingsPage() {
                   <td style={{ padding: '14px 20px' }}>
                     <p style={{ fontSize: '12px', color: '#555' }}>{formatDate(booking.schedule.departureTime)}</p>
                     <p style={{ fontSize: '11px', color: '#bbb' }}>{formatTime(booking.schedule.departureTime)}</p>
+                  </td>
+                  <td style={{ padding: '14px 20px' }}>
+                    <p style={{ fontSize: '12px', color: '#555' }}>{booking.pickupPoint ? booking.pickupPoint.name : '—'}</p>
+                    {booking.pickupPoint && (
+                      <p style={{ fontSize: '11px', color: '#bbb' }}>
+                        ~{formatTime(new Date(new Date(booking.schedule.departureTime).getTime() + booking.pickupPoint.offsetMin * 60000).toISOString())}
+                      </p>
+                    )}
+                    {booking.dropoffPoint && <p style={{ fontSize: '11px', color: '#bbb' }}>Off: {booking.dropoffPoint.name}</p>}
                   </td>
                   <td style={{ padding: '14px 20px', fontSize: '13px', color: '#555' }}>{booking.seatNumbers.join(', ')}</td>
                   <td style={{ padding: '14px 20px', fontSize: '13px', fontWeight: 600, color: '#1a1a1a' }}>{formatPrice(booking.totalPrice)}</td>

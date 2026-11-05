@@ -4,12 +4,13 @@ import { useEffect, useState } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { useAuthStore } from '@/store/auth.store'
 import Link from 'next/link'
-import { Menu, X, Bus, Ticket, LayoutDashboard, LogOut, Calendar } from 'lucide-react'
+import { Menu, X, Bus, Ticket, LayoutDashboard, LogOut, Calendar, MapPin } from 'lucide-react'
 
 const navItems = [
   { href: '/operator', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/operator/buses', label: 'My Buses', icon: Bus },
   { href: '/operator/schedules', label: 'Schedules', icon: Calendar },
+  { href: '/operator/pickups', label: 'Pickup Points', icon: MapPin },
   { href: '/operator/bookings', label: 'Bookings', icon: Ticket },
 ]
 

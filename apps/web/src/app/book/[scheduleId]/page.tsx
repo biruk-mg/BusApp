@@ -20,10 +20,52 @@ interface ScheduleDetail {
   _count: { bookings: number }
 }
 
-interface BookingSeat {
-  scheduleId: string
-  status: string
-  seatNumbers: string[]
+interface PointOption {
+  id: string
+  name: string
+  sequence: number
+  offsetMin: number
+}
+
+// A list of places to choose from, each with the estimated time the bus is there
+function PointPicker({ points, value, onChange, departure, noneLabel }: {
+  points: PointOption[]
+  value: string
+  onChange: (id: string) => void
+  departure: string
+  noneLabel?: string
+}) {
+  const row = (selected: boolean) => ({
+    display: 'flex', alignItems: 'center', gap: '12px', width: '100%', textAlign: 'left' as const,
+    padding: '12px 14px', borderRadius: '12px', cursor: 'pointer',
+    border: selected ? '2px solid #C0392B' : '1px solid #E5E5E5',
+    background: selected ? '#FFF5F5' : 'white',
+  })
+  const dot = (selected: boolean) => ({
+    width: '18px', height: '18px', borderRadius: '50%', flexShrink: 0,
+    border: selected ? '5px solid #C0392B' : '2px solid #CCC', background: 'white',
+  })
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      {noneLabel && (
+        <button type="button" onClick={() => onChange('')} style={row(value === '')}>
+          <span style={dot(value === '')} />
+          <span style={{ fontSize: '14px', color: '#555' }}>{noneLabel}</span>
+        </button>
+      )}
+      {points.map((p) => {
+        const selected = value === p.id
+        const at = new Date(new Date(departure).getTime() + p.offsetMin * 60000).toISOString()
+        return (
+          <button type="button" key={p.id} onClick={() => onChange(p.id)} style={row(selected)}>
+            <span style={dot(selected)} />
+            <span style={{ flex: 1, fontSize: '14px', fontWeight: 600, color: '#1a1a1a' }}>{p.name}</span>
+            <span style={{ fontSize: '12px', color: '#999', whiteSpace: 'nowrap' }}>~{formatTime(at)}</span>
+          </button>
+        )
+      })}
+    </div>
+  )
 }
 
 export default function BookPage() {
@@ -38,6 +80,10 @@ export default function BookPage() {
   const [selectedSeats, setSelectedSeats] = useState<string[]>([])
   const [bookedSeats, setBookedSeats] = useState<string[]>([])
   const [booking, setBooking] = useState(false)
+  const [pickupPoints, setPickupPoints] = useState<PointOption[]>([])
+  const [dropoffPoints, setDropoffPoints] = useState<PointOption[]>([])
+  const [pickupId, setPickupId] = useState('')
+  const [dropoffId, setDropoffId] = useState('')
 
   useEffect(() => {
     loadFromStorage()
@@ -52,6 +98,8 @@ export default function BookPage() {
         if (found) setSchedule(found)
         const seatsRes = await api.get(`/schedules/${scheduleId}/seats`)
         setBookedSeats(seatsRes.data.data.bookedSeats)
+        setPickupPoints(seatsRes.data.data.pickupPoints ?? [])
+        setDropoffPoints(seatsRes.data.data.dropoffPoints ?? [])
       } catch { toast.error('Failed to load schedule') }
       finally { setLoading(false) }
     }
@@ -63,6 +111,9 @@ export default function BookPage() {
       String(i + 1).padStart(2, '0')
     )
   : []
+
+  const pickupMissing = pickupPoints.length > 0 && !pickupId
+  const canBook = selectedSeats.length === passengers && !pickupMissing
 
   const toggleSeat = (seat: string) => {
     if (bookedSeats.includes(seat)) return
@@ -79,10 +130,16 @@ export default function BookPage() {
 
   const handleBook = async () => {
     if (!isAuthenticated) { toast.error('Please login'); router.push('/login'); return }
+    if (pickupPoints.length > 0 && !pickupId) { toast.error('Please choose your pickup point'); return }
     if (selectedSeats.length !== passengers) { toast.error(`Select exactly ${passengers} seat${passengers > 1 ? 's' : ''}`); return }
     setBooking(true)
     try {
-      const res = await api.post('/bookings', { scheduleId, seatNumbers: selectedSeats })
+      const res = await api.post('/bookings', {
+        scheduleId,
+        seatNumbers: selectedSeats,
+        pickupPointId: pickupId || undefined,
+        dropoffPointId: dropoffId || undefined,
+      })
       toast.success('Seats reserved. Complete your payment to confirm.')
       router.push(`/bookings/${res.data.data.booking.id}`)
     } catch (err: unknown) {
@@ -140,6 +197,19 @@ export default function BookPage() {
       </div>
 
       <div className="page-pad" style={{ maxWidth: '900px', margin: '0 auto', padding: '32px 80px' }}>
+        {/* Pickup point (required when the operator has pickup points) */}
+        {pickupPoints.length > 0 && (
+          <div className="seat-card" style={{ background: 'white', borderRadius: '16px', border: '1px solid #EEEEEE', padding: '28px', marginBottom: '20px' }}>
+            <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#1a1a1a' }}>
+              Where will you board? <span style={{ color: '#C0392B' }}>*</span>
+            </h2>
+            <p style={{ fontSize: '13px', color: '#999', margin: '4px 0 16px' }}>
+              Choose your pickup point. Times are estimates, so please be there 10–15 minutes early.
+            </p>
+            <PointPicker points={pickupPoints} value={pickupId} onChange={setPickupId} departure={schedule.departureTime} />
+          </div>
+        )}
+
         {/* Seat Map */}
         <div className="seat-card" style={{ background: 'white', borderRadius: '16px', border: '1px solid #EEEEEE', padding: '28px', marginBottom: '20px' }}>
           <div className="seat-head" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
@@ -227,20 +297,35 @@ export default function BookPage() {
 </div>
         </div>
 
+        {/* Drop-off point (optional) */}
+        {dropoffPoints.length > 0 && (
+          <div className="seat-card" style={{ background: 'white', borderRadius: '16px', border: '1px solid #EEEEEE', padding: '28px', marginBottom: '20px' }}>
+            <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#1a1a1a' }}>
+              Where do you want to get off? <span style={{ fontSize: '13px', fontWeight: 500, color: '#999' }}>(optional)</span>
+            </h2>
+            <p style={{ fontSize: '13px', color: '#999', margin: '4px 0 16px' }}>
+              You can also ask the driver to stop along the way.
+            </p>
+            <PointPicker points={dropoffPoints} value={dropoffId} onChange={setDropoffId} departure={schedule.arrivalTime} noneLabel="I'll tell the driver" />
+          </div>
+        )}
+
         {/* Confirm Button */}
         <button
           className="confirm-btn"
           onClick={handleBook}
-          disabled={booking || selectedSeats.length !== passengers}
+          disabled={booking || !canBook}
           style={{
-            width: '100%', background: selectedSeats.length === passengers ? '#C0392B' : '#E0E0E0',
-            color: selectedSeats.length === passengers ? 'white' : '#999',
+            width: '100%', background: canBook ? '#C0392B' : '#E0E0E0',
+            color: canBook ? 'white' : '#999',
             border: 'none', borderRadius: '12px', padding: '16px',
-            fontSize: '16px', fontWeight: 700, cursor: selectedSeats.length === passengers ? 'pointer' : 'not-allowed',
+            fontSize: '16px', fontWeight: 700, cursor: canBook ? 'pointer' : 'not-allowed',
             transition: 'all 0.2s',
           }}
         >
-          {booking ? 'Reserving...' : selectedSeats.length === passengers
+          {booking ? 'Reserving...' : pickupMissing
+            ? 'Choose your pickup point'
+            : selectedSeats.length === passengers
             ? `Reserve Seats — ${formatPrice(schedule.price * passengers)}`
             : `Select ${passengers - selectedSeats.length} more seat${passengers - selectedSeats.length > 1 ? 's' : ''}`
           }

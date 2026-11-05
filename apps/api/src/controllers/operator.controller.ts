@@ -139,6 +139,8 @@ export const getOperatorBookings = async (req: AuthRequest, res: Response): Prom
       },
       include: {
         user: { select: { name: true, phone: true } },
+        pickupPoint: { select: { name: true, sequence: true, offsetMin: true } },
+        dropoffPoint: { select: { name: true } },
         schedule: {
           include: {
             route: true,

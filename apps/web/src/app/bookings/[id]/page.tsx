@@ -17,12 +17,14 @@ interface BookingDetail {
   createdAt: string
   expiresAt?: string | null
   payment?: { status: string } | null
+  pickupPoint?: { name: string; offsetMin: number } | null
+  dropoffPoint?: { name: string } | null
   schedule: {
     departureTime: string
     arrivalTime: string
     price: number
     route: { fromCity: string; toCity: string; estimatedDurationMin: number }
-    bus: { busType: string; plateNumber: string; operator: { companyName: string } }
+    bus: { busType: string; plateNumber: string; operator: { companyName: string; phone?: string } }
   }
 }
 
@@ -230,9 +232,14 @@ export default function BookingDetailPage() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
               {[
                 { label: 'DATE', value: formatDate(booking.schedule.departureTime), icon: <Calendar size={12} /> },
+                ...(booking.pickupPoint
+                  ? [{ label: 'PICKUP', value: `${booking.pickupPoint.name} · ~${formatTime(new Date(new Date(booking.schedule.departureTime).getTime() + booking.pickupPoint.offsetMin * 60000).toISOString())}`, icon: <MapPin size={12} /> }]
+                  : []),
+                { label: 'DROP-OFF', value: booking.dropoffPoint ? booking.dropoffPoint.name : 'Tell the driver', icon: null },
                 { label: 'SEATS', value: booking.seatNumbers.join(', '), icon: null },
                 { label: 'BUS TYPE', value: booking.schedule.bus.busType, icon: null },
                 { label: 'OPERATOR', value: booking.schedule.bus.operator.companyName, icon: null },
+                ...(booking.schedule.bus.operator.phone ? [{ label: 'OPERATOR PHONE', value: booking.schedule.bus.operator.phone, icon: null }] : []),
                 { label: 'PLATE', value: booking.schedule.bus.plateNumber, icon: null },
                 { label: isPaid ? 'TOTAL PAID' : 'TOTAL DUE', value: formatPrice(booking.totalPrice), icon: null, highlight: true },
               ].map(item => (
