@@ -12,6 +12,7 @@ import scheduleRoutes from './routes/schedule.routes'
 import bookingRoutes from './routes/booking.routes'
 import operatorRoutes from './routes/operator.routes'
 import paymentRoutes from './routes/payment.routes'
+import { maybeTopUp } from './lib/recurring'
 
 // Load environment variables
 dotenv.config({ path: '../../.env' })
@@ -79,6 +80,8 @@ app.get('/health', (_req, res) => {
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`🚌 API running on port: ${PORT}`)
   console.log(`📦 Environment: ${process.env.NODE_ENV || 'development'}`)
+  // Top up recurring schedules when the server starts (it wakes on Render's free plan)
+  maybeTopUp()
 })
 
 export default app

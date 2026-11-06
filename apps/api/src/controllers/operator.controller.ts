@@ -315,6 +315,8 @@ export const getScheduleAvailability = async (req: AuthRequest, res: Response): 
         occupancyRate,
         plateNumber: s.bus.plateNumber,
         busType: s.bus.busType,
+        status: s.status,
+        templateId: s.templateId,
       }
     })
 

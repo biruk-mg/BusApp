@@ -6,7 +6,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "test": "vitest run"
   },
   "dependencies": {
     "@bus/types": "workspace:*",
@@ -40,6 +41,7 @@
     "prisma": "^7.7.0",
     "ts-node": "latest",
     "tsx": "^4.21.0",
-    "typescript": "latest"
+    "typescript": "latest",
+    "vitest": "^5.1.0"
   }
 }

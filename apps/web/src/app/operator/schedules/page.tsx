@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
-import { Calendar, Plus, Trash2, X } from 'lucide-react'
+import { Calendar, Plus, Trash2, X, Ban, RotateCcw } from 'lucide-react'
+import RecurringSchedules from '@/components/RecurringSchedules'
 import { formatDate, formatTime, formatPrice } from '@bus/utils'
 import toast from 'react-hot-toast'
 
@@ -18,10 +19,18 @@ interface Schedule {
   occupancyRate: number
   plateNumber: string
   busType: string
+  status: 'OPEN' | 'CLOSED'
+  templateId: string | null
 }
 
 interface Route { id: string; fromCity: string; toCity: string }
 interface Bus { id: string; plateNumber: string; busType: string; totalSeats: number }
+
+// Formats a date for <input type="datetime-local"> in the browser's own time
+const toLocalInput = (d: Date) => {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
 
 export default function OperatorSchedulesPage() {
   const [schedules, setSchedules] = useState<Schedule[]>([])
@@ -42,8 +51,6 @@ export default function OperatorSchedulesPage() {
         api.get('/operator/buses'),
       ])
       setSchedules(schedulesRes.data.data.schedules)
-      setSchedules(schedulesRes.data.data.schedules)
-console.log('schedules data:', schedulesRes.data.data.schedules)
       setRoutes(routesRes.data.data.routes)
       setBuses(busesRes.data.data.buses)
     } catch {
@@ -92,6 +99,18 @@ console.log('schedules data:', schedulesRes.data.data.schedules)
     }
   }
 
+  const handleStatus = async (s: Schedule, status: 'OPEN' | 'CLOSED') => {
+    if (status === 'CLOSED' && !confirm('Close this trip? Passengers can no longer book it. Existing bookings stay, so you must handle those passengers yourself.')) return
+    try {
+      await api.patch(`/schedules/${s.id}/status`, { status })
+      toast.success(status === 'CLOSED' ? 'Trip closed' : 'Trip reopened')
+      fetchAll()
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } } }
+      toast.error(error.response?.data?.error || 'Failed to update trip')
+    }
+  }
+
   const occupancyColor = (booked: number, total: number) => {
     const rate = total > 0 ? (booked / total) * 100 : 0
     if (rate >= 80) return '#C0392B'
@@ -107,18 +126,17 @@ console.log('schedules data:', schedulesRes.data.data.schedules)
           <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#1a1a1a', display: 'flex', alignItems: 'center', gap: '10px' }}>
             <Calendar size={22} color="#C0392B" /> My Schedules
           </h1>
-          <p style={{ fontSize: '13px', color: '#999', marginTop: '4px' }}>{schedules.length} schedules</p>
+          <p style={{ fontSize: '13px', color: '#999', marginTop: '4px' }}>{schedules.length} trips</p>
         </div>
         <button
-  onClick={() => {
-    console.log('clicked', showForm)
-    setShowForm(!showForm)
-  }}
+  onClick={() => setShowForm(!showForm)}
   style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#C0392B', color: 'white', border: 'none', padding: '10px 20px', borderRadius: '10px', fontSize: '13px', fontWeight: 600, cursor: 'pointer' }}
 >
-  <Plus size={16} /> Add Schedule
+  <Plus size={16} /> Add One Trip
 </button>
       </div>
+
+      <RecurringSchedules routes={routes} buses={buses} onChanged={fetchAll} />
 
       {/* Create Form */}
       {showForm && (
@@ -147,7 +165,7 @@ console.log('schedules data:', schedulesRes.data.data.schedules)
                     if (route && form.departureTime && route.estimatedDurationMin) {
                       const departure = new Date(form.departureTime)
                       const arrival = new Date(departure.getTime() + route.estimatedDurationMin * 60 * 1000)
-                      setForm(prev => ({ ...prev, routeId, arrivalTime: arrival.toISOString().slice(0, 16) }))
+                      setForm(prev => ({ ...prev, routeId, arrivalTime: toLocalInput(arrival) }))
                     }
                   }}
                   required
@@ -192,7 +210,7 @@ console.log('schedules data:', schedulesRes.data.data.schedules)
                     if (route && departureTime && route.estimatedDurationMin) {
                       const departure = new Date(departureTime)
                       const arrival = new Date(departure.getTime() + route.estimatedDurationMin * 60 * 1000)
-                      setForm(prev => ({ ...prev, departureTime, arrivalTime: arrival.toISOString().slice(0, 16) }))
+                      setForm(prev => ({ ...prev, departureTime, arrivalTime: toLocalInput(arrival) }))
                     }
                   }}
                   required
@@ -295,6 +313,7 @@ console.log('schedules data:', schedulesRes.data.data.schedules)
             {!loading && schedules.map((s) => {
               const isPast = new Date(s.departureTime) < new Date()
               const isFullySold = s.availableSeats === 0
+              const isClosed = s.status === 'CLOSED'
               const bookedCount = s.bookedSeats
 
               return (
@@ -364,29 +383,46 @@ console.log('schedules data:', schedulesRes.data.data.schedules)
                       fontWeight: 600,
                       padding: '4px 10px',
                       borderRadius: '20px',
-                      background: isPast ? '#F5F5F5' : isFullySold ? '#FEF2F2' : '#F0FFF4',
-                      color: isPast ? '#999' : isFullySold ? '#C0392B' : '#2E8B57'
+                      background: isPast ? '#F5F5F5' : isClosed ? '#FFF8E5' : isFullySold ? '#FEF2F2' : '#F0FFF4',
+                      color: isPast ? '#999' : isClosed ? '#9A6B00' : isFullySold ? '#C0392B' : '#2E8B57'
                     }}>
-                      {isPast ? 'Departed' : isFullySold ? 'Full' : 'Available'}
+                      {isPast ? 'Departed' : isClosed ? 'Closed' : isFullySold ? 'Full' : 'Available'}
                     </span>
+                    {s.templateId && (
+                      <span style={{ display: 'block', fontSize: '10px', color: '#bbb', marginTop: '4px' }}>Recurring</span>
+                    )}
                   </td>
 
                   {/* Actions */}
                   <td style={{ padding: '14px 20px' }}>
                     {!isPast && (
-                      <button
-                        onClick={() => handleDelete(s.id)}
-                        style={{
-                          background: '#FFF5F5',
-                          color: '#C0392B',
-                          border: 'none',
-                          padding: '6px 10px',
-                          borderRadius: '6px',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        <Trash2 size={14} />
-                      </button>
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        {isClosed ? (
+                          <button
+                            onClick={() => handleStatus(s, 'OPEN')}
+                            title="Reopen this trip"
+                            style={{ background: '#F0FFF4', color: '#2E8B57', border: 'none', padding: '6px 10px', borderRadius: '6px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '12px', fontWeight: 600 }}
+                          >
+                            <RotateCcw size={13} /> Reopen
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleStatus(s, 'CLOSED')}
+                            title="Close this trip"
+                            style={{ background: '#FFF8E5', color: '#9A6B00', border: 'none', padding: '6px 10px', borderRadius: '6px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '12px', fontWeight: 600 }}
+                          >
+                            <Ban size={13} /> Close
+                          </button>
+                        )}
+                        {!s.templateId && (
+                          <button
+                            onClick={() => handleDelete(s.id)}
+                            style={{ background: '#FFF5F5', color: '#C0392B', border: 'none', padding: '6px 10px', borderRadius: '6px', cursor: 'pointer' }}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
                     )}
                   </td>
 

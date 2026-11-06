@@ -17,6 +17,7 @@ export const formatDate = (date: Date | string): string => {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
+    timeZone: 'Africa/Addis_Ababa',
   })
 }
 
@@ -24,6 +25,7 @@ export const formatTime = (date: Date | string): string => {
   return new Date(date).toLocaleTimeString('en-ET', {
     hour: '2-digit',
     minute: '2-digit',
+    timeZone: 'Africa/Addis_Ababa',
   })
 }
 

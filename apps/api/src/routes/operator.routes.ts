@@ -14,6 +14,13 @@ import {
   updatePickupPoint,
   deletePickupPoint,
 } from '../controllers/pickup.controller'
+import {
+  listTemplates,
+  createTemplate,
+  updateTemplate,
+  setTemplateActive,
+  deleteTemplate,
+} from '../controllers/template.controller'
 import { authenticate } from '../middleware/auth'
 
 const router: IRouter = Router()
@@ -38,5 +45,10 @@ router.get('/pickups', authenticate, authorizeOperator, listMyPickupPoints)
 router.post('/pickups', authenticate, authorizeOperator, createPickupPoint)
 router.put('/pickups/:id', authenticate, authorizeOperator, updatePickupPoint)
 router.delete('/pickups/:id', authenticate, authorizeOperator, deletePickupPoint)
+router.get('/templates', authenticate, authorizeOperator, listTemplates)
+router.post('/templates', authenticate, authorizeOperator, createTemplate)
+router.put('/templates/:id', authenticate, authorizeOperator, updateTemplate)
+router.patch('/templates/:id/active', authenticate, authorizeOperator, setTemplateActive)
+router.delete('/templates/:id', authenticate, authorizeOperator, deleteTemplate)
 
 export default router

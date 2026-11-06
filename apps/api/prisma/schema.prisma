@@ -36,6 +36,7 @@ model Bus {
   totalSeats  Int
   busType     BusType    @default(STANDARD)
   schedules   Schedule[]
+  templates   ScheduleTemplate[]
   createdAt   DateTime   @default(now())
 }
 
@@ -46,6 +47,7 @@ model Route {
   distanceKm          Float
   estimatedDurationMin Int
   schedules           Schedule[]
+  templates           ScheduleTemplate[]
   pickupPoints        PickupPoint[]
   createdAt           DateTime   @default(now())
 
@@ -61,8 +63,41 @@ model Schedule {
   departureTime DateTime
   arrivalTime   DateTime
   price         Float
+  status        ScheduleStatus @default(OPEN)
+  templateId    String?
+  template      ScheduleTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
   bookings      Booking[]
   createdAt     DateTime  @default(now())
+
+  // A recurring schedule can never create the same departure twice.
+  // Manual trips have no template (NULL), so they are not affected.
+  @@unique([templateId, departureTime])
+  @@index([departureTime])
+}
+
+enum ScheduleStatus {
+  OPEN
+  CLOSED
+}
+
+// A recurring daily schedule. Real Schedule rows are generated from it
+// for the next 30 days. departureTime is the local Addis Ababa time ("05:00").
+// daysOfWeek: 0 = Sunday ... 6 = Saturday.
+model ScheduleTemplate {
+  id            String     @id @default(cuid())
+  busId         String
+  bus           Bus        @relation(fields: [busId], references: [id])
+  routeId       String
+  route         Route      @relation(fields: [routeId], references: [id])
+  departureTime String
+  price         Float
+  daysOfWeek    Int[]
+  active        Boolean    @default(true)
+  schedules     Schedule[]
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  @@index([busId])
 }
 
 model Booking {

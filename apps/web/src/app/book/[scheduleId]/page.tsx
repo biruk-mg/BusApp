@@ -15,10 +15,21 @@ interface ScheduleDetail {
   departureTime: string
   arrivalTime: string
   route: { fromCity: string; toCity: string; estimatedDurationMin: number }
-  bus: { totalSeats: number; busType: string; plateNumber: string }
+  bus: { totalSeats: number; busType: string; plateNumber: string; operator: { id: string; companyName: string } }
   availableSeats: number
-  _count: { bookings: number }
+  status: 'OPEN' | 'CLOSED'
 }
+
+interface Departure {
+  id: string
+  price: number
+  departureTime: string
+  availableSeats: number
+}
+
+// The calendar day (YYYY-MM-DD) of a moment in Addis Ababa
+const addisDay = (iso: string) =>
+  new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Africa/Addis_Ababa' })
 
 interface PointOption {
   id: string
@@ -84,6 +95,7 @@ export default function BookPage() {
   const [dropoffPoints, setDropoffPoints] = useState<PointOption[]>([])
   const [pickupId, setPickupId] = useState('')
   const [dropoffId, setDropoffId] = useState('')
+  const [departures, setDepartures] = useState<Departure[]>([])
 
   useEffect(() => {
     loadFromStorage()
@@ -92,14 +104,33 @@ export default function BookPage() {
 
   useEffect(() => {
     const fetchSchedule = async () => {
+      // Switching to another departure starts a fresh selection
+      setLoading(true)
+      setSelectedSeats([])
+      setPickupId('')
+      setDropoffId('')
+      setDepartures([])
       try {
-        const allRes = await api.get('/schedules')
-        const found = allRes.data.data.schedules.find((s: ScheduleDetail) => s.id === scheduleId)
-        if (found) setSchedule(found)
+        const detailRes = await api.get(`/schedules/${scheduleId}`)
+        const found: ScheduleDetail = detailRes.data.data.schedule
+        setSchedule(found)
         const seatsRes = await api.get(`/schedules/${scheduleId}/seats`)
         setBookedSeats(seatsRes.data.data.bookedSeats)
         setPickupPoints(seatsRes.data.data.pickupPoints ?? [])
         setDropoffPoints(seatsRes.data.data.dropoffPoints ?? [])
+
+        // Other departures of the same operator, on the same route and day
+        try {
+          const othersRes = await api.get('/schedules/search', {
+            params: {
+              fromCity: found.route.fromCity,
+              toCity: found.route.toCity,
+              date: addisDay(found.departureTime),
+              operatorId: found.bus.operator.id,
+            },
+          })
+          setDepartures(othersRes.data.data.schedules)
+        } catch { /* the strip is optional */ }
       } catch { toast.error('Failed to load schedule') }
       finally { setLoading(false) }
     }
@@ -113,7 +144,7 @@ export default function BookPage() {
   : []
 
   const pickupMissing = pickupPoints.length > 0 && !pickupId
-  const canBook = selectedSeats.length === passengers && !pickupMissing
+  const canBook = selectedSeats.length === passengers && !pickupMissing && schedule?.status !== 'CLOSED'
 
   const toggleSeat = (seat: string) => {
     if (bookedSeats.includes(seat)) return
@@ -197,6 +228,48 @@ export default function BookPage() {
       </div>
 
       <div className="page-pad" style={{ maxWidth: '900px', margin: '0 auto', padding: '32px 80px' }}>
+        {schedule.status === 'CLOSED' && (
+          <div style={{ background: '#FEF2F2', border: '1px solid #F5C6C6', color: '#C0392B', borderRadius: '12px', padding: '16px 20px', marginBottom: '20px', fontSize: '14px', fontWeight: 600 }}>
+            This trip is closed and no longer takes bookings.
+            {departures.length > 0 && ' Please choose another departure below.'}
+          </div>
+        )}
+
+        {/* Other departures of this operator today */}
+        {departures.length > 1 && (
+          <div className="seat-card" style={{ background: 'white', borderRadius: '16px', border: '1px solid #EEEEEE', padding: '20px 28px', marginBottom: '20px' }}>
+            <h2 style={{ fontSize: '15px', fontWeight: 700, color: '#1a1a1a', marginBottom: '12px' }}>
+              Other departures today with {schedule.bus.operator.companyName}
+            </h2>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+              {departures.map((d) => {
+                const current = d.id === scheduleId
+                const soldOut = d.availableSeats === 0
+                return (
+                  <button
+                    type="button"
+                    key={d.id}
+                    disabled={soldOut && !current}
+                    onClick={() => { if (!current) router.replace(`/book/${d.id}?passengers=${passengers}`) }}
+                    style={{
+                      padding: '10px 14px', borderRadius: '12px', textAlign: 'left',
+                      cursor: current ? 'default' : soldOut ? 'not-allowed' : 'pointer',
+                      border: current ? '2px solid #C0392B' : '1px solid #E5E5E5',
+                      background: current ? '#FFF5F5' : 'white',
+                      opacity: soldOut && !current ? 0.5 : 1,
+                    }}
+                  >
+                    <div style={{ fontSize: '16px', fontWeight: 700, color: '#1a1a1a' }}>{formatTime(d.departureTime)}</div>
+                    <div style={{ fontSize: '11px', color: '#999' }}>
+                      {soldOut ? 'Sold out' : `${d.availableSeats} seats · ${formatPrice(d.price)}`}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Pickup point (required when the operator has pickup points) */}
         {pickupPoints.length > 0 && (
           <div className="seat-card" style={{ background: 'white', borderRadius: '16px', border: '1px solid #EEEEEE', padding: '28px', marginBottom: '20px' }}>

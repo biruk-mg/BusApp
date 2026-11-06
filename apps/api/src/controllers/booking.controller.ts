@@ -43,6 +43,11 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
       return
     }
 
+    if (schedule.status === 'CLOSED') {
+      res.status(409).json({ success: false, error: 'This trip is closed and no longer takes bookings' })
+      return
+    }
+
     // Check departure time hasn't passed
     if (new Date(schedule.departureTime) < new Date()) {
       res.status(400).json({ success: false, error: 'This schedule has already departed' })
@@ -89,6 +94,12 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
       // One booking at a time per trip: this lock is what stops two people
       // from taking the same seat at the same moment.
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${scheduleId}))`
+
+      // The operator may have closed the trip while we were checking things
+      const current = await tx.schedule.findUnique({ where: { id: scheduleId }, select: { status: true } })
+      if (current?.status === 'CLOSED') {
+        throw new Error('This trip is closed and no longer takes bookings')
+      }
 
       // Free seats held by unpaid bookings that ran out of time
       await releaseExpiredHolds(tx, { scheduleId }, now)
@@ -151,7 +162,11 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
     })
   } catch (error) {
     const message = (error as Error).message
-    if (message.includes('already booked') || message.includes('Not enough seats')) {
+    if (
+      message.includes('already booked') ||
+      message.includes('Not enough seats') ||
+      message.includes('is closed')
+    ) {
       res.status(409).json({ success: false, error: message })
       return
     }

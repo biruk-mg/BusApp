@@ -5,6 +5,8 @@ import { prisma } from '../lib/prisma'
 import { AuthRequest } from '../middleware/auth'
 import { getOperatorForUser } from '../lib/operator'
 import { activeBookingFilter, releaseExpiredHolds } from '../lib/seats'
+import { addisDayRange, isValidDateString } from '../lib/time'
+import { maybeTopUp } from '../lib/recurring'
 
 const createScheduleSchema = z.object({
   routeId: z.string(),
@@ -18,9 +20,9 @@ const BUS_TYPES = ['STANDARD', 'LUXURY', 'MINIBUS'] as const
 type BusTypeValue = (typeof BUS_TYPES)[number]
 
 // ─── Search (public) ─────────────────────────────────────
-// Only upcoming trips are ever returned. All filters are optional:
-//   fromCity, toCity, date (YYYY-MM-DD), busType, operator (name contains),
-//   maxPrice, sort=time|price
+// Only upcoming, open trips are ever returned. All filters are optional:
+//   fromCity, toCity, date (YYYY-MM-DD, an Addis Ababa calendar day),
+//   busType, operator (name contains), operatorId, maxPrice, sort=time|price
 export const searchSchedules = async (req: Request, res: Response): Promise<void> => {
   try {
     const fromCity = (req.query.fromCity as string | undefined)?.trim()
@@ -28,23 +30,25 @@ export const searchSchedules = async (req: Request, res: Response): Promise<void
     const date = req.query.date as string | undefined
     const busType = req.query.busType as string | undefined
     const operator = (req.query.operator as string | undefined)?.trim()
+    const operatorId = (req.query.operatorId as string | undefined)?.trim()
     const maxPrice = req.query.maxPrice ? Number(req.query.maxPrice) : undefined
     const sort = req.query.sort === 'price' ? 'price' : 'time'
 
+    // Keep recurring schedules topped up (in the background, at most hourly)
+    maybeTopUp()
+
     const now = new Date()
-    const where: Prisma.ScheduleWhereInput = { departureTime: { gte: now } }
+    const where: Prisma.ScheduleWhereInput = { departureTime: { gte: now }, status: 'OPEN' }
 
     if (date) {
-      const startOfDay = new Date(date)
-      startOfDay.setHours(0, 0, 0, 0)
-      const endOfDay = new Date(date)
-      endOfDay.setHours(23, 59, 59, 999)
-      if (Number.isNaN(startOfDay.getTime())) {
+      if (!isValidDateString(date)) {
         res.status(400).json({ success: false, error: 'Invalid date' })
         return
       }
+      // The day is an Addis Ababa day (UTC+3), whatever time zone the server uses
+      const { start, end } = addisDayRange(date)
       // Never go earlier than "now", even when searching for today
-      where.departureTime = { gte: startOfDay > now ? startOfDay : now, lte: endOfDay }
+      where.departureTime = { gte: start > now ? start : now, lt: end }
     }
 
     const routeFilter: Prisma.RouteWhereInput = {}
@@ -59,6 +63,7 @@ export const searchSchedules = async (req: Request, res: Response): Promise<void
     if (operator) {
       busFilter.operator = { companyName: { contains: operator, mode: 'insensitive' } }
     }
+    if (operatorId) busFilter.operatorId = operatorId
     if (Object.keys(busFilter).length > 0) where.bus = busFilter
 
     if (maxPrice !== undefined && Number.isFinite(maxPrice)) where.price = { lte: maxPrice }
@@ -99,11 +104,16 @@ export const searchSchedules = async (req: Request, res: Response): Promise<void
 }
 
 // ─── List all (upcoming by default; ?includePast=true for history) ──
+// Closed trips are hidden unless ?includeClosed=true (used by the admin page).
 export const getAllSchedules = async (req: Request, res: Response): Promise<void> => {
   try {
     const includePast = req.query.includePast === 'true'
+    const includeClosed = req.query.includeClosed === 'true'
     const schedules = await prisma.schedule.findMany({
-      where: includePast ? {} : { departureTime: { gte: new Date() } },
+      where: {
+        ...(includePast ? {} : { departureTime: { gte: new Date() } }),
+        ...(includeClosed ? {} : { status: 'OPEN' as const }),
+      },
       include: {
         route: true,
         bus: { include: { operator: true } },
@@ -114,6 +124,38 @@ export const getAllSchedules = async (req: Request, res: Response): Promise<void
     res.json({ success: true, data: { schedules, total: schedules.length } })
   } catch (error) {
     console.error('GetAllSchedules error:', error)
+    res.status(500).json({ success: false, error: 'Internal server error' })
+  }
+}
+
+// ─── One trip with seats left (public) ───────────────────
+// Used by the seat page. Closed trips are returned too (with status CLOSED),
+// so the page can tell the passenger instead of showing "not found".
+export const getScheduleById = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const id = req.params.id as string
+    const schedule = await prisma.schedule.findUnique({
+      where: { id },
+      include: {
+        route: true,
+        bus: { include: { operator: true } },
+        bookings: { where: activeBookingFilter(), select: { seatNumbers: true } },
+      },
+    })
+    if (!schedule) {
+      res.status(404).json({ success: false, error: 'Schedule not found' })
+      return
+    }
+    const { bookings, ...rest } = schedule
+    const booked = bookings.reduce((n, b) => n + b.seatNumbers.length, 0)
+    res.json({
+      success: true,
+      data: {
+        schedule: { ...rest, availableSeats: Math.max(0, schedule.bus.totalSeats - booked), totalSeats: schedule.bus.totalSeats },
+      },
+    })
+  } catch (error) {
+    console.error('GetScheduleById error:', error)
     res.status(500).json({ success: false, error: 'Internal server error' })
   }
 }
@@ -216,10 +258,65 @@ export const deleteSchedule = async (req: AuthRequest, res: Response): Promise<v
       return
     }
 
+    // Trips made by a recurring schedule would simply be created again
+    if (schedule.templateId) {
+      res.status(409).json({
+        success: false,
+        error: 'This trip belongs to a recurring schedule. Close it, or pause the recurring schedule.',
+      })
+      return
+    }
+
     await prisma.schedule.delete({ where: { id } })
     res.json({ success: true, message: 'Schedule deleted' })
   } catch (error) {
     console.error('DeleteSchedule error:', error)
+    res.status(500).json({ success: false, error: 'Internal server error' })
+  }
+}
+
+// ─── Close / reopen one trip (operator for own trips, or admin) ──
+// A closed trip takes no new bookings and disappears from search.
+// Existing bookings are kept, and a passenger already paying can finish.
+export const setScheduleStatus = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const parsed = z.object({ status: z.enum(['OPEN', 'CLOSED']) }).safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({ success: false, error: 'status must be OPEN or CLOSED' })
+      return
+    }
+
+    const id = req.params.id as string
+    const schedule = await prisma.schedule.findUnique({ where: { id }, include: { bus: true } })
+    if (!schedule) {
+      res.status(404).json({ success: false, error: 'Schedule not found' })
+      return
+    }
+
+    if (req.userRole === 'OPERATOR') {
+      const operator = await getOperatorForUser(req.userId!)
+      if (!operator || schedule.bus.operatorId !== operator.id) {
+        res.status(403).json({ success: false, error: 'You can only change your own schedules' })
+        return
+      }
+    }
+
+    if (schedule.departureTime < new Date()) {
+      res.status(400).json({ success: false, error: 'This trip has already departed' })
+      return
+    }
+
+    const updated = await prisma.schedule.update({
+      where: { id },
+      data: { status: parsed.data.status },
+    })
+    res.json({
+      success: true,
+      message: parsed.data.status === 'CLOSED' ? 'Trip closed' : 'Trip reopened',
+      data: { schedule: updated },
+    })
+  } catch (error) {
+    console.error('SetScheduleStatus error:', error)
     res.status(500).json({ success: false, error: 'Internal server error' })
   }
 }
@@ -251,6 +348,7 @@ export const getScheduleSeats = async (req: Request, res: Response): Promise<voi
     res.json({
       success: true,
       data: {
+        status: schedule.status,
         totalSeats: schedule.bus.totalSeats,
         bookedSeats: bookings.flatMap((b) => b.seatNumbers),
         pickupPoints: points.filter((p) => p.kind !== 'DROPOFF'),

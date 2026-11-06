@@ -33,6 +33,8 @@ function SearchResults() {
   const [busTypeFilter, setBusTypeFilter] = useState('ALL')
   const [operatorFilter, setOperatorFilter] = useState('ALL')
   const [sortBy, setSortBy] = useState<'time' | 'price'>('time')
+  // Which departure is showing for each operator (operator name -> trip id)
+  const [picked, setPicked] = useState<Record<string, string>>({})
 
   const operators = useMemo(
     () => Array.from(new Set(schedules.map((s) => s.bus.operator.companyName))).sort(),
@@ -54,6 +56,20 @@ function SearchResults() {
         : a.departureTime.localeCompare(b.departureTime)
     )
   }, [schedules, busTypeFilter, operatorFilter, sortBy])
+
+  // One group per operator, with its departures in time order.
+  // Groups keep the order of the sorted list (earliest or cheapest first).
+  const groups = useMemo(() => {
+    const byOperator = new Map<string, ScheduleResult[]>()
+    for (const s of visible) {
+      const key = s.bus.operator.companyName
+      byOperator.set(key, [...(byOperator.get(key) ?? []), s])
+    }
+    return Array.from(byOperator, ([key, trips]) => ({
+      key,
+      trips: [...trips].sort((a, b) => a.departureTime.localeCompare(b.departureTime)),
+    }))
+  }, [visible])
 
   useEffect(() => {
     const fetch = async () => {
@@ -89,7 +105,7 @@ function SearchResults() {
             </span>
             <div style={{ width: '4px', height: '4px', borderRadius: '50%', background: 'rgba(255,255,255,0.2)' }} />
             <span style={{ fontSize: '13px', color: 'rgba(255,255,255,0.4)' }}>
-              {visible.length} bus{visible.length !== 1 ? 'es' : ''} found
+              {visible.length} trip{visible.length !== 1 ? 's' : ''} found
             </span>
           </div>
         </div>
@@ -168,9 +184,43 @@ function SearchResults() {
         )}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          {visible.map((schedule) => (
+          {groups.map((group) => {
+            // Show the chosen departure, else the first one that still has seats
+            const schedule =
+              group.trips.find((t) => t.id === picked[group.key]) ??
+              group.trips.find((t) => t.availableSeats > 0) ??
+              group.trips[0]
+            return (
+            <div key={group.key} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {group.trips.length > 1 && (
+                <div className="time-strip" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                  {group.trips.map((t) => {
+                    const current = t.id === schedule.id
+                    const soldOut = t.availableSeats === 0
+                    return (
+                      <button
+                        type="button"
+                        key={t.id}
+                        disabled={soldOut}
+                        onClick={() => setPicked((prev) => ({ ...prev, [group.key]: t.id }))}
+                        style={{
+                          padding: '10px 14px', borderRadius: '12px', textAlign: 'left',
+                          cursor: soldOut ? 'not-allowed' : 'pointer',
+                          border: current ? '2px solid #C0392B' : '1px solid #E5E5E5',
+                          background: current ? '#FFF5F5' : 'white',
+                          opacity: soldOut ? 0.5 : 1,
+                        }}
+                      >
+                        <div style={{ fontSize: '16px', fontWeight: 700, color: '#1a1a1a' }}>{formatTime(t.departureTime)}</div>
+                        <div style={{ fontSize: '11px', color: '#999' }}>
+                          {soldOut ? 'Sold out' : `${t.availableSeats} seats · ${formatPrice(t.price)}`}
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
             <div
-              key={schedule.id}
               className="result-card"
               style={{ background: 'white', borderRadius: '16px', border: '1px solid #EEEEEE', padding: '28px 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
             >
@@ -232,7 +282,9 @@ function SearchResults() {
                 </button>
               </div>
             </div>
-          ))}
+            </div>
+            )
+          })}
         </div>
       </div>
     </>
