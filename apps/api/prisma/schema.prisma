@@ -104,8 +104,10 @@ model ScheduleTemplate {
 
 model Booking {
   id          String        @id @default(cuid())
-  userId      String
-  user        User          @relation(fields: [userId], references: [id])
+  // Online bookings belong to an account. Counter (walk-in) sales may have no
+  // account: then the passenger is identified by passengerName / passengerPhone.
+  userId      String?
+  user        User?         @relation(fields: [userId], references: [id])
   scheduleId  String
   schedule    Schedule      @relation(fields: [scheduleId], references: [id])
   seatNumbers String[]
@@ -118,8 +120,29 @@ model Booking {
   pickupPoint    PickupPoint? @relation("BookingPickup", fields: [pickupPointId], references: [id], onDelete: Restrict)
   dropoffPointId String?
   dropoffPoint   PickupPoint? @relation("BookingDropoff", fields: [dropoffPointId], references: [id], onDelete: Restrict)
+
+  // Counter sales (made by staff at the bus station)
+  source         BookingSource @default(ONLINE)
+  passengerName  String?
+  passengerPhone String?
+  ticketCode     String?       @unique
+  soldByStaffId  String?
+  soldByStaff    OperatorStaff? @relation("StaffSales", fields: [soldByStaffId], references: [id], onDelete: Restrict)
+  // A voided counter sale is CANCELLED with these set (who, when, why)
+  voidedAt        DateTime?
+  voidedByStaffId String?
+  voidedByStaff   OperatorStaff? @relation("StaffVoids", fields: [voidedByStaffId], references: [id], onDelete: Restrict)
+  voidReason      String?
+
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
+
+  @@index([soldByStaffId, createdAt])
+}
+
+enum BookingSource {
+  ONLINE
+  COUNTER
 }
 
 model Payment {
@@ -129,8 +152,17 @@ model Payment {
   amount    Float
   method    PaymentMethod
   chapaRef  String?
+  // Receipt / transaction number typed by the seller for Telebirr, CBE Birr and
+  // bank transfers (empty for cash). The same number can't be used twice for
+  // the same method, so one receipt can't pay for two tickets.
+  reference String?
+  // When a counter sale is voided its reference moves here, so the passenger's
+  // real receipt can be used again for the corrected sale.
+  voidedReference String?
   status    PaymentStatus @default(PENDING)
   createdAt DateTime      @default(now())
+
+  @@unique([method, reference])
 }
 
 enum Role {
@@ -154,6 +186,7 @@ enum BookingStatus {
 }
 
 enum PaymentMethod {
+  CASH
   TELEBIRR
   CBE_BIRR
   CARD
@@ -213,6 +246,8 @@ model OperatorStaff {
   operator   Operator  @relation(fields: [operatorId], references: [id], onDelete: Cascade)
   role       StaffRole
   active     Boolean   @default(true)
+  sales      Booking[] @relation("StaffSales")
+  voids      Booking[] @relation("StaffVoids")
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 

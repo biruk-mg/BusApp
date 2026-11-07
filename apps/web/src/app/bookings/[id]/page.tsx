@@ -17,6 +17,8 @@ interface BookingDetail {
   createdAt: string
   expiresAt?: string | null
   payment?: { status: string } | null
+  source?: 'ONLINE' | 'COUNTER'
+  ticketCode?: string | null
   pickupPoint?: { name: string; offsetMin: number } | null
   dropoffPoint?: { name: string } | null
   schedule: {
@@ -169,7 +171,18 @@ export default function BookingDetailPage() {
             This booking expired or was cancelled. Please choose your seats again.
           </div>
         )}
-        {booking.status === 'CANCELLED' && isPaid && (
+        {booking.source === 'COUNTER' && booking.status !== 'CANCELLED' && booking.ticketCode && (
+          <div style={{ background: '#F0FFF4', border: '1px solid #BBF7D0', borderRadius: '12px', padding: '14px 16px', marginBottom: '16px', fontSize: '13px', color: '#166534', lineHeight: 1.5 }}>
+            This ticket was bought at the bus station and is already paid. Ticket code: <strong>{booking.ticketCode}</strong>.{' '}
+            <a href={`/ticket/${booking.ticketCode}`} style={{ color: '#166534', fontWeight: 700 }}>Open ticket</a>
+          </div>
+        )}
+        {booking.source === 'COUNTER' && booking.status === 'CANCELLED' && (
+          <div style={{ background: '#FFF5F5', border: '1px solid #FECACA', borderRadius: '12px', padding: '14px 16px', marginBottom: '16px', fontSize: '13px', color: '#991B1B', lineHeight: 1.5 }}>
+            This ticket was cancelled by the bus company. Please contact them about your money.
+          </div>
+        )}
+        {booking.source !== 'COUNTER' && booking.status === 'CANCELLED' && isPaid && (
           <div style={{ background: '#FFF5F5', border: '1px solid #FECACA', borderRadius: '12px', padding: '14px 16px', marginBottom: '16px', fontSize: '13px', color: '#991B1B', lineHeight: 1.5 }}>
             We received your payment, but these seats were taken before it was confirmed. Please contact support to get a refund.
           </div>
@@ -294,7 +307,7 @@ export default function BookingDetailPage() {
             </button>
           )}
 
-          {(booking.status === 'CONFIRMED' || booking.status === 'PENDING') && (
+          {booking.source !== 'COUNTER' && (booking.status === 'CONFIRMED' || booking.status === 'PENDING') && (
             <button
               onClick={handleCancel}
               style={{ flex: 1, background: '#FFF5F5', color: '#C0392B', border: '1px solid #FECACA', padding: '14px', borderRadius: '12px', fontSize: '14px', fontWeight: 500, cursor: 'pointer' }}

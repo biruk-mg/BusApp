@@ -6,6 +6,7 @@ export interface AuthRequest extends Request {
   userRole?: string
   // Set by the staff middleware (middleware/staff.ts), never from the request:
   operatorId?: string
+  staffId?: string
   staffRole?: 'MANAGER' | 'SELLER' | 'CHECKER'
   isAdmin?: boolean
 }

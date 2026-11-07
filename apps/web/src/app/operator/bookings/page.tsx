@@ -11,7 +11,11 @@ interface Booking {
   seatNumbers: string[]
   totalPrice: number
   status: string
-  user: { name: string; phone: string }
+  // Counter (walk-in) sales may have no account: then passengerName/passengerPhone are used
+  user: { name: string; phone: string } | null
+  passengerName?: string | null
+  passengerPhone?: string | null
+  source?: 'ONLINE' | 'COUNTER'
   pickupPoint?: { name: string; sequence: number; offsetMin: number } | null
   dropoffPoint?: { name: string } | null
   schedule: {
@@ -75,8 +79,9 @@ export default function OperatorBookingsPage() {
               return (
                 <tr key={booking.id} style={{ borderTop: '1px solid #F5F5F5' }}>
                   <td style={{ padding: '14px 20px' }}>
-                    <p style={{ fontSize: '13px', fontWeight: 600, color: '#1a1a1a' }}>{booking.user.name}</p>
-                    <p style={{ fontSize: '11px', color: '#bbb' }}>{booking.user.phone}</p>
+                    <p style={{ fontSize: '13px', fontWeight: 600, color: '#1a1a1a' }}>{booking.user?.name ?? booking.passengerName ?? '—'}
+                      {booking.source === 'COUNTER' && <span style={{ marginLeft: '6px', fontSize: '10px', background: '#FFF8E5', color: '#9A6B00', padding: '2px 6px', borderRadius: '10px' }}>Counter</span>}</p>
+                    <p style={{ fontSize: '11px', color: '#bbb' }}>{booking.user?.phone ?? booking.passengerPhone ?? ''}</p>
                   </td>
                   <td style={{ padding: '14px 20px', fontSize: '13px', color: '#555' }}>
                     {booking.schedule.route.fromCity} → {booking.schedule.route.toCity}

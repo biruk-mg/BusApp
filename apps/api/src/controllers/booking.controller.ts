@@ -3,7 +3,8 @@ import { z } from 'zod'
 import QRCode from 'qrcode'
 import { prisma } from '../lib/prisma'
 import { AuthRequest } from '../middleware/auth'
-import { HOLD_MINUTES, activeBookingFilter, releaseExpiredHolds, seatLabels } from '../lib/seats'
+import { HOLD_MINUTES, releaseExpiredHolds } from '../lib/seats'
+import { SaleError, validateTripForSale, lockAndCheckSeats } from '../lib/sales'
 
 // ─── Validation ─────────────────────────────────────────
 const createBookingSchema = z.object({
@@ -27,102 +28,11 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
     const dropoffPointId = parsed.data.dropoffPointId || undefined
     const userId = req.userId!
 
-    if (new Set(seatNumbers).size !== seatNumbers.length) {
-      res.status(400).json({ success: false, error: 'Each seat can only be selected once' })
-      return
-    }
-
-    // Get schedule with bus info
-    const schedule = await prisma.schedule.findUnique({
-      where: { id: scheduleId },
-      include: { bus: true },
-    })
-
-    if (!schedule) {
-      res.status(404).json({ success: false, error: 'Schedule not found' })
-      return
-    }
-
-    if (schedule.status === 'CLOSED') {
-      res.status(409).json({ success: false, error: 'This trip is closed and no longer takes bookings' })
-      return
-    }
-
-    // Check departure time hasn't passed
-    if (new Date(schedule.departureTime) < new Date()) {
-      res.status(400).json({ success: false, error: 'This schedule has already departed' })
-      return
-    }
-
-    // Only seats that exist on this bus can be booked
-    const validSeats = new Set(seatLabels(schedule.bus.totalSeats))
-    const unknownSeat = seatNumbers.find((seat) => !validSeats.has(seat))
-    if (unknownSeat) {
-      res.status(400).json({ success: false, error: `Seat ${unknownSeat} does not exist on this bus` })
-      return
-    }
-
-    // Pickup is required when this operator has pickup points on this route;
-    // drop-off is always optional (passengers can also ask the driver).
-    const points = await prisma.pickupPoint.findMany({
-      where: { operatorId: schedule.bus.operatorId, routeId: schedule.routeId },
-    })
-    const pickupOptions = points.filter((p) => p.kind !== 'DROPOFF')
-    const dropoffOptions = points.filter((p) => p.kind !== 'PICKUP')
-
-    if (pickupOptions.length > 0) {
-      if (!pickupPointId) {
-        res.status(400).json({ success: false, error: 'Please choose your pickup point' })
-        return
-      }
-      if (!pickupOptions.some((p) => p.id === pickupPointId)) {
-        res.status(400).json({ success: false, error: 'That pickup point is not available for this trip' })
-        return
-      }
-    } else if (pickupPointId) {
-      res.status(400).json({ success: false, error: 'That pickup point is not available for this trip' })
-      return
-    }
-    if (dropoffPointId && !dropoffOptions.some((p) => p.id === dropoffPointId)) {
-      res.status(400).json({ success: false, error: 'That drop-off point is not available for this trip' })
-      return
-    }
-
+    const schedule = await validateTripForSale({ scheduleId, seatNumbers, pickupPointId, dropoffPointId })
     const now = new Date()
 
     const booking = await prisma.$transaction(async (tx) => {
-      // One booking at a time per trip: this lock is what stops two people
-      // from taking the same seat at the same moment.
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${scheduleId}))`
-
-      // The operator may have closed the trip while we were checking things
-      const current = await tx.schedule.findUnique({ where: { id: scheduleId }, select: { status: true } })
-      if (current?.status === 'CLOSED') {
-        throw new Error('This trip is closed and no longer takes bookings')
-      }
-
-      // Free seats held by unpaid bookings that ran out of time
-      await releaseExpiredHolds(tx, { scheduleId }, now)
-
-      // Seats held by paid bookings and by unpaid bookings still inside their hold
-      const existingBookings = await tx.booking.findMany({
-        where: { scheduleId, ...activeBookingFilter(now) },
-        select: { seatNumbers: true },
-      })
-
-      const bookedSeats = existingBookings.flatMap((b) => b.seatNumbers)
-
-      // Check if any requested seat is already booked
-      const conflictingSeat = seatNumbers.find((seat) => bookedSeats.includes(seat))
-      if (conflictingSeat) {
-        throw new Error(`Seat ${conflictingSeat} is already booked`)
-      }
-
-      // Check total seats not exceeded
-      const totalBooked = bookedSeats.length + seatNumbers.length
-      if (totalBooked > schedule.bus.totalSeats) {
-        throw new Error('Not enough seats available')
-      }
+      await lockAndCheckSeats(tx, schedule, seatNumbers, now)
 
       // Calculate total price (always on the server, never trusted from the client)
       const totalPrice = schedule.price * seatNumbers.length
@@ -161,13 +71,8 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
       data: { booking },
     })
   } catch (error) {
-    const message = (error as Error).message
-    if (
-      message.includes('already booked') ||
-      message.includes('Not enough seats') ||
-      message.includes('is closed')
-    ) {
-      res.status(409).json({ success: false, error: message })
+    if (error instanceof SaleError) {
+      res.status(error.status).json({ success: false, error: error.message })
       return
     }
     console.error('CreateBooking error:', error)
@@ -254,6 +159,12 @@ export const cancelBooking = async (req: AuthRequest, res: Response): Promise<vo
     // Only owner or admin can cancel
     if (booking.userId !== userId && req.userRole !== 'ADMIN') {
       res.status(403).json({ success: false, error: 'Access denied' })
+      return
+    }
+
+    // Counter tickets were paid at the counter: only staff can void them
+    if (booking.source === 'COUNTER') {
+      res.status(403).json({ success: false, error: 'This ticket was sold at the counter. Please ask the bus company to cancel it.' })
       return
     }
 

@@ -131,8 +131,15 @@ export const initializePayment = async (req: AuthRequest, res: Response): Promis
       return
     }
 
-    if (booking.userId !== userId) {
+    const payer = booking.user
+    if (!payer || booking.userId !== userId) {
       res.status(403).json({ success: false, error: 'Access denied' })
+      return
+    }
+
+    // Counter tickets are paid at the counter, never through Chapa
+    if (booking.source === 'COUNTER') {
+      res.status(400).json({ success: false, error: 'This ticket was paid at the counter' })
       return
     }
 
@@ -158,10 +165,10 @@ export const initializePayment = async (req: AuthRequest, res: Response): Promis
       {
         amount: booking.totalPrice,
         currency: 'ETB',
-        email: booking.user.email || `user${booking.user.id.slice(-6)}@ethiobus.com`,
-        first_name: booking.user.name.split(' ')[0],
-        last_name: booking.user.name.split(' ')[1] || booking.user.name,
-        phone_number: booking.user.phone,
+        email: payer.email || `user${payer.id.slice(-6)}@ethiobus.com`,
+        first_name: payer.name.split(' ')[0],
+        last_name: payer.name.split(' ')[1] || payer.name,
+        phone_number: payer.phone,
         tx_ref: txRef,
         callback_url: `${process.env.API_URL}/api/v1/payments/verify`,
         return_url: `${process.env.FRONTEND_URL}/bookings/${bookingId}?payment=success`,

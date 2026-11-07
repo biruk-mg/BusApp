@@ -12,6 +12,8 @@ import scheduleRoutes from './routes/schedule.routes'
 import bookingRoutes from './routes/booking.routes'
 import operatorRoutes from './routes/operator.routes'
 import paymentRoutes from './routes/payment.routes'
+import counterRoutes from './routes/counter.routes'
+import ticketRoutes from './routes/ticket.routes'
 import { maybeTopUp } from './lib/recurring'
 
 // Load environment variables
@@ -57,6 +59,8 @@ app.use('/api/v1/schedules', scheduleRoutes)
 app.use('/api/v1/bookings', bookingRoutes)
 app.use('/api/v1/operator', operatorRoutes)
 app.use('/api/v1/payments', paymentRoutes)
+app.use('/api/v1/counter', counterRoutes)
+app.use('/api/v1/tickets', ticketRoutes)
 // ─── Swagger Docs ────────────────────────────────────────
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec))
 

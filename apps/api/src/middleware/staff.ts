@@ -42,6 +42,7 @@ export const requireStaff =
         return
       }
       req.operatorId = ctx.operatorId
+      req.staffId = ctx.staffId
       req.staffRole = ctx.role
       next()
     } catch (error) {
