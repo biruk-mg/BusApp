@@ -1,12 +1,23 @@
 // ─── User ───────────────────────────────────────────────
 export type UserRole = 'CUSTOMER' | 'OPERATOR' | 'DRIVER' | 'ADMIN'
 
+// What a person may do at an operator company (set by the company's manager)
+export type StaffRole = 'MANAGER' | 'SELLER' | 'CHECKER'
+
+export interface StaffInfo {
+  role: StaffRole
+  operatorId: string
+  companyName: string
+}
+
 export interface User {
   id: string
   name: string
   phone: string
   email?: string
   role: UserRole
+  // Only for operator staff; null or missing for passengers and the admin
+  staff?: StaffInfo | null
   createdAt: Date
 }
 

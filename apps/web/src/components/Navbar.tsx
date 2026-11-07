@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { useAuthStore } from '@/store/auth.store'
+import { homeFor } from '@/lib/staffHome'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Bus, Ticket, LogOut, User, Menu, X } from 'lucide-react'
@@ -115,10 +116,10 @@ export default function Navbar() {
                   ⚙️ Admin Dashboard
                 </Link>
               )}
-              {user?.role === 'OPERATOR' && (
-                <Link href="/operator" onClick={() => setMenuOpen(false)}
+              {user?.role === 'OPERATOR' && user.staff && (
+                <Link href={homeFor(user)} onClick={() => setMenuOpen(false)}
                   style={{ padding: '12px 0', fontSize: '15px', color: '#333', textDecoration: 'none', borderBottom: '1px solid #F5F5F5' }}>
-                  🚌 Operator Portal
+                  🚌 {user.staff.role === 'SELLER' ? 'Counter Sales' : user.staff.role === 'CHECKER' ? 'Ticket Check-in' : 'Operator Portal'}
                 </Link>
               )}
               <button onClick={handleLogout}

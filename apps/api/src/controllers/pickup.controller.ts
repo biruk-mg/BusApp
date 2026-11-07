@@ -2,7 +2,7 @@ import { Response } from 'express'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma'
 import { AuthRequest } from '../middleware/auth'
-import { getOperatorForUser } from '../lib/operator'
+import { companyOf } from '../middleware/staff'
 
 const createSchema = z.object({
   routeId: z.string(),
@@ -19,13 +19,10 @@ const updateSchema = z.object({
   offsetMin: z.number().int().min(0, 'Minutes cannot be negative').max(600).optional(),
 })
 
-async function requireOperator(req: AuthRequest, res: Response) {
-  const operator = await getOperatorForUser(req.userId!)
-  if (!operator) {
-    res.status(403).json({ success: false, error: 'An operator account is required' })
-    return null
-  }
-  return operator
+// The company comes from the staff middleware (managers only), never from the request
+function requireOperator(req: AuthRequest, res: Response) {
+  const id = companyOf(req, res, 403)
+  return id ? { id } : null
 }
 
 const isUniqueError = (e: unknown) => (e as { code?: string })?.code === 'P2002'
@@ -33,7 +30,7 @@ const isUniqueError = (e: unknown) => (e as { code?: string })?.code === 'P2002'
 // ─── List my pickup points (optionally for one route) ────
 export const listMyPickupPoints = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const operator = await requireOperator(req, res)
+    const operator = requireOperator(req, res)
     if (!operator) return
     const routeId = req.query.routeId as string | undefined
 
@@ -51,7 +48,7 @@ export const listMyPickupPoints = async (req: AuthRequest, res: Response): Promi
 // ─── Create ──────────────────────────────────────────────
 export const createPickupPoint = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const operator = await requireOperator(req, res)
+    const operator = requireOperator(req, res)
     if (!operator) return
 
     const parsed = createSchema.safeParse(req.body)
@@ -83,7 +80,7 @@ export const createPickupPoint = async (req: AuthRequest, res: Response): Promis
 // ─── Update (own points only) ────────────────────────────
 export const updatePickupPoint = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const operator = await requireOperator(req, res)
+    const operator = requireOperator(req, res)
     if (!operator) return
     const id = req.params.id as string
 
@@ -114,7 +111,7 @@ export const updatePickupPoint = async (req: AuthRequest, res: Response): Promis
 // ─── Delete (own points only, and only if nobody booked it) ──
 export const deletePickupPoint = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const operator = await requireOperator(req, res)
+    const operator = requireOperator(req, res)
     if (!operator) return
     const id = req.params.id as string
 

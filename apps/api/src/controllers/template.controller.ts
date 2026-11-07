@@ -2,7 +2,7 @@ import { Response } from 'express'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma'
 import { AuthRequest } from '../middleware/auth'
-import { getOperatorForUser } from '../lib/operator'
+import { scopeOf } from '../middleware/staff'
 import { generateForTemplate, removeUnbookedFutureTrips, GENERATE_DAYS } from '../lib/recurring'
 import { isValidTimeString } from '../lib/time'
 
@@ -18,17 +18,11 @@ const templateSchema = z.object({
 })
 
 /**
- * Who is calling: an operator (limited to their own company) or an admin.
- * Returns null and sends an error response when the caller has no company.
+ * Which company the caller may touch: their own (staff), or all (master admin).
+ * Comes from the staff middleware, never from the request. Sends the error itself.
  */
-async function resolveScope(req: AuthRequest, res: Response): Promise<{ operatorId: string | null } | null> {
-  if (req.userRole === 'ADMIN') return { operatorId: null }
-  const operator = await getOperatorForUser(req.userId!)
-  if (!operator) {
-    res.status(404).json({ success: false, error: 'Operator not found' })
-    return null
-  }
-  return { operatorId: operator.id }
+function resolveScope(req: AuthRequest, res: Response): { operatorId: string | null } | null {
+  return scopeOf(req, res)
 }
 
 const include = {
@@ -39,7 +33,7 @@ const include = {
 // ─── List my recurring schedules ─────────────────────────
 export const listTemplates = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const scope = await resolveScope(req, res)
+    const scope = resolveScope(req, res)
     if (!scope) return
 
     const templates = await prisma.scheduleTemplate.findMany({
@@ -74,7 +68,7 @@ export const createTemplate = async (req: AuthRequest, res: Response): Promise<v
       res.status(400).json({ success: false, error: parsed.error.issues[0].message })
       return
     }
-    const scope = await resolveScope(req, res)
+    const scope = resolveScope(req, res)
     if (!scope) return
 
     const { routeId, busId } = parsed.data
@@ -122,7 +116,7 @@ export const createTemplate = async (req: AuthRequest, res: Response): Promise<v
 
 /** Loads a template and checks the caller may manage it. Sends the error itself. */
 async function loadOwnedTemplate(req: AuthRequest, res: Response) {
-  const scope = await resolveScope(req, res)
+  const scope = resolveScope(req, res)
   if (!scope) return null
   const template = await prisma.scheduleTemplate.findUnique({
     where: { id: req.params.id as string },

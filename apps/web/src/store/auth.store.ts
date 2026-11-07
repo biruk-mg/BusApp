@@ -6,6 +6,8 @@ interface AuthState {
   token: string | null
   isAuthenticated: boolean
   setAuth: (user: User, token: string) => void
+  // Replace the saved user (e.g. after asking the server who this is now)
+  setUser: (user: User) => void
   logout: () => void
   loadFromStorage: () => void
 }
@@ -19,6 +21,11 @@ export const useAuthStore = create<AuthState>((set) => ({
     localStorage.setItem('token', token)
     localStorage.setItem('user', JSON.stringify(user))
     set({ user, token, isAuthenticated: true })
+  },
+
+  setUser: (user) => {
+    localStorage.setItem('user', JSON.stringify(user))
+    set({ user })
   },
 
   logout: () => {

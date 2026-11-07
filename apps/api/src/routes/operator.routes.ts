@@ -21,34 +21,46 @@ import {
   setTemplateActive,
   deleteTemplate,
 } from '../controllers/template.controller'
+import {
+  listStaff,
+  createStaff,
+  updateStaff,
+  resetStaffPassword,
+} from '../controllers/staff.controller'
 import { authenticate } from '../middleware/auth'
+import { requireManager, requireStaff } from '../middleware/staff'
 
 const router: IRouter = Router()
 
-const authorizeOperator = (req: any, res: any, next: any) => {
-  if (req.userRole !== 'OPERATOR' && req.userRole !== 'ADMIN') {
-    res.status(403).json({ success: false, error: 'Operator access required' })
-    return
-  }
-  next()
-}
+// Everything under /operator is for the company's managers (and the master admin)
+// for now. Counter sales (sellers) and check-in (checkers) get their own routes later.
+const managerOnly = [authenticate, requireManager]
 
-router.get('/profile', authenticate, authorizeOperator, getOperatorProfile)
-router.get('/buses', authenticate, authorizeOperator, getOperatorBuses)
-router.post('/buses', authenticate, authorizeOperator, createBus)
-router.get('/bookings', authenticate, authorizeOperator, getOperatorBookings)
-router.get('/stats', authenticate, authorizeOperator, getOperatorStats)
-router.get('/analytics', authenticate, authorizeOperator, getRevenueAnalytics)
-router.get('/availability', authenticate, authorizeOperator, getScheduleAvailability)
-router.get('/buses/all', authenticate, authorizeOperator, getOperatorBuses)
-router.get('/pickups', authenticate, authorizeOperator, listMyPickupPoints)
-router.post('/pickups', authenticate, authorizeOperator, createPickupPoint)
-router.put('/pickups/:id', authenticate, authorizeOperator, updatePickupPoint)
-router.delete('/pickups/:id', authenticate, authorizeOperator, deletePickupPoint)
-router.get('/templates', authenticate, authorizeOperator, listTemplates)
-router.post('/templates', authenticate, authorizeOperator, createTemplate)
-router.put('/templates/:id', authenticate, authorizeOperator, updateTemplate)
-router.patch('/templates/:id/active', authenticate, authorizeOperator, setTemplateActive)
-router.delete('/templates/:id', authenticate, authorizeOperator, deleteTemplate)
+router.get('/profile', ...managerOnly, getOperatorProfile)
+router.get('/buses', ...managerOnly, getOperatorBuses)
+router.post('/buses', ...managerOnly, createBus)
+router.get('/bookings', ...managerOnly, getOperatorBookings)
+router.get('/stats', ...managerOnly, getOperatorStats)
+router.get('/analytics', ...managerOnly, getRevenueAnalytics)
+router.get('/availability', ...managerOnly, getScheduleAvailability)
+router.get('/buses/all', ...managerOnly, getOperatorBuses)
+router.get('/pickups', ...managerOnly, listMyPickupPoints)
+router.post('/pickups', ...managerOnly, createPickupPoint)
+router.put('/pickups/:id', ...managerOnly, updatePickupPoint)
+router.delete('/pickups/:id', ...managerOnly, deletePickupPoint)
+router.get('/templates', ...managerOnly, listTemplates)
+router.post('/templates', ...managerOnly, createTemplate)
+router.put('/templates/:id', ...managerOnly, updateTemplate)
+router.patch('/templates/:id/active', ...managerOnly, setTemplateActive)
+router.delete('/templates/:id', ...managerOnly, deleteTemplate)
+
+
+// Staff accounts: managers of a company only. The admin is not included because
+// these endpoints work inside one company.
+const staffManagers = [authenticate, requireStaff(['MANAGER'], { allowAdmin: false })]
+router.get('/staff', ...staffManagers, listStaff)
+router.post('/staff', ...staffManagers, createStaff)
+router.patch('/staff/:id', ...staffManagers, updateStaff)
+router.post('/staff/:id/password', ...staffManagers, resetStaffPassword)
 
 export default router

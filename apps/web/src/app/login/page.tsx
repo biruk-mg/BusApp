@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/store/auth.store'
+import { homeFor } from '@/lib/staffHome'
 import toast from 'react-hot-toast'
 import { Bus, Phone, Lock } from 'lucide-react'
 
@@ -23,9 +24,7 @@ export default function LoginPage() {
       const { user, token } = res.data.data
       setAuth(user, token)
       toast.success(`Welcome back, ${user.name}!`)
-      if (user.role === 'ADMIN') router.push('/admin')
-      else if (user.role === 'OPERATOR') router.push('/operator')
-      else router.push('/')
+      router.push(homeFor(user))
     } catch (err: unknown) {
       const error = err as { response?: { data?: { error?: string } } }
       toast.error(error.response?.data?.error || 'Login failed')

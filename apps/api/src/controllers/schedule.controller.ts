@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma'
 import { AuthRequest } from '../middleware/auth'
-import { getOperatorForUser } from '../lib/operator'
+import { scopeOf } from '../middleware/staff'
 import { activeBookingFilter, releaseExpiredHolds } from '../lib/seats'
 import { addisDayRange, isValidDateString } from '../lib/time'
 import { maybeTopUp } from '../lib/recurring'
@@ -163,6 +163,8 @@ export const getScheduleById = async (req: Request, res: Response): Promise<void
 // ─── Create (operator for own buses, or admin) ───────────
 export const createSchedule = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
+    const scope = scopeOf(req, res)
+    if (!scope) return
     const parsed = createScheduleSchema.safeParse(req.body)
     if (!parsed.success) {
       res.status(400).json({ success: false, error: parsed.error.issues[0].message })
@@ -196,12 +198,9 @@ export const createSchedule = async (req: AuthRequest, res: Response): Promise<v
     }
 
     // Operators may only schedule their own buses
-    if (req.userRole === 'OPERATOR') {
-      const operator = await getOperatorForUser(req.userId!)
-      if (!operator || bus.operatorId !== operator.id) {
-        res.status(403).json({ success: false, error: 'You can only schedule your own buses' })
-        return
-      }
+    if (scope.operatorId && bus.operatorId !== scope.operatorId) {
+      res.status(403).json({ success: false, error: 'You can only schedule your own buses' })
+      return
     }
 
     // A bus can't be in two places at once
@@ -231,6 +230,8 @@ export const createSchedule = async (req: AuthRequest, res: Response): Promise<v
 // ─── Delete (operator for own trips, or admin; only if no bookings) ──
 export const deleteSchedule = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
+    const scope = scopeOf(req, res)
+    if (!scope) return
     const id = req.params.id as string
 
     const schedule = await prisma.schedule.findUnique({
@@ -242,12 +243,9 @@ export const deleteSchedule = async (req: AuthRequest, res: Response): Promise<v
       return
     }
 
-    if (req.userRole === 'OPERATOR') {
-      const operator = await getOperatorForUser(req.userId!)
-      if (!operator || schedule.bus.operatorId !== operator.id) {
-        res.status(403).json({ success: false, error: 'You can only delete your own schedules' })
-        return
-      }
+    if (scope.operatorId && schedule.bus.operatorId !== scope.operatorId) {
+      res.status(403).json({ success: false, error: 'You can only delete your own schedules' })
+      return
     }
 
     if (schedule._count.bookings > 0) {
@@ -280,6 +278,8 @@ export const deleteSchedule = async (req: AuthRequest, res: Response): Promise<v
 // Existing bookings are kept, and a passenger already paying can finish.
 export const setScheduleStatus = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
+    const scope = scopeOf(req, res)
+    if (!scope) return
     const parsed = z.object({ status: z.enum(['OPEN', 'CLOSED']) }).safeParse(req.body)
     if (!parsed.success) {
       res.status(400).json({ success: false, error: 'status must be OPEN or CLOSED' })
@@ -293,12 +293,9 @@ export const setScheduleStatus = async (req: AuthRequest, res: Response): Promis
       return
     }
 
-    if (req.userRole === 'OPERATOR') {
-      const operator = await getOperatorForUser(req.userId!)
-      if (!operator || schedule.bus.operatorId !== operator.id) {
-        res.status(403).json({ success: false, error: 'You can only change your own schedules' })
-        return
-      }
+    if (scope.operatorId && schedule.bus.operatorId !== scope.operatorId) {
+      res.status(403).json({ success: false, error: 'You can only change your own schedules' })
+      return
     }
 
     if (schedule.departureTime < new Date()) {

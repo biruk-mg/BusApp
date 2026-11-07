@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma'
+import { describeStaff } from '../lib/staff'
 
 // ─── Validation Schemas ─────────────────────────────────
 const registerSchema = z.object({
@@ -31,7 +32,6 @@ export const register = async (req: Request, res: Response): Promise<void> => {
   try {
     // Validate input
   const parsed = registerSchema.safeParse(req.body)
-console.log('📦 Parsed result:', parsed)
 if (!parsed.success) {
   res.status(400).json({
     success: false,
@@ -113,6 +113,9 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     // Generate token
     const token = generateToken(user.id, user.role)
 
+    // Staff details tell the web app where to send this person (null for passengers)
+    const staff = user.role === 'OPERATOR' ? await describeStaff(user.id) : null
+
     res.json({
       success: true,
       message: 'Login successful',
@@ -123,6 +126,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
           phone: user.phone,
           email: user.email,
           role: user.role,
+          staff,
         },
         token,
       },
@@ -148,7 +152,8 @@ export const getMe = async (req: Request, res: Response): Promise<void> => {
       return
     }
 
-    res.json({ success: true, data: { user } })
+    const staff = user.role === 'OPERATOR' ? await describeStaff(user.id) : null
+    res.json({ success: true, data: { user: { ...user, staff } } })
   } catch (error) {
     console.error('GetMe error:', error)
     res.status(500).json({ success: false, error: 'Internal server error' })

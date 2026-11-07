@@ -87,10 +87,12 @@ describe.skipIf(!TEST_URL)('recurring schedules (database)', () => {
     userB = await prisma.user.create({ data: { name: 'B', phone: `${tag}-0002`, password: 'x', role: 'OPERATOR' } })
     customer = await prisma.user.create({ data: { name: 'C', phone: `${tag}-0003`, password: 'x' } })
     ids.users.push(userA.id, userB.id, customer.id)
-    // Operators are linked to users by phone number
     operatorA = await prisma.operator.create({ data: { companyName: `${tag} A`, licenseNo: `${tag}-A`, phone: userA.phone } })
     operatorB = await prisma.operator.create({ data: { companyName: `${tag} B`, licenseNo: `${tag}-B`, phone: userB.phone } })
     ids.operators.push(operatorA.id, operatorB.id)
+    // The staff middleware puts the company on the request; these tests call the
+    // controllers directly, so they pass operatorId themselves (see staff.db.test.ts
+    // for the real routes and middleware).
     route = await prisma.route.create({
       data: { fromCity: `${tag}-From`, toCity: `${tag}-To`, distanceKm: 200, estimatedDurationMin: 360 },
     })
@@ -180,7 +182,7 @@ describe.skipIf(!TEST_URL)('recurring schedules (database)', () => {
     const t = await prisma.scheduleTemplate.findFirstOrThrow({ where: { busId: bus1.id } })
     const [trip] = await tripsOf(t.id)
     const closed = await call(schedCtl.setScheduleStatus, {
-      userId: userA.id, userRole: 'OPERATOR', params: { id: trip.id }, body: { status: 'CLOSED' },
+      userId: userA.id, userRole: 'OPERATOR', operatorId: operatorA.id, staffRole: 'MANAGER', params: { id: trip.id }, body: { status: 'CLOSED' },
     })
     expect(closed.status).toBe(200)
     await lib.generateForTemplate(t)
@@ -189,7 +191,7 @@ describe.skipIf(!TEST_URL)('recurring schedules (database)', () => {
     expect(await prisma.schedule.count({ where: { templateId: t.id, departureTime: trip.departureTime } })).toBe(1)
 
     const reopened = await call(schedCtl.setScheduleStatus, {
-      userId: userA.id, userRole: 'OPERATOR', params: { id: trip.id }, body: { status: 'OPEN' },
+      userId: userA.id, userRole: 'OPERATOR', operatorId: operatorA.id, staffRole: 'MANAGER', params: { id: trip.id }, body: { status: 'OPEN' },
     })
     expect(reopened.status).toBe(200)
   })
@@ -197,16 +199,16 @@ describe.skipIf(!TEST_URL)('recurring schedules (database)', () => {
   it("stops another operator from closing or deleting someone else's trip", async () => {
     const trip = await prisma.schedule.findFirstOrThrow({ where: { busId: bus1.id } })
     const closed = await call(schedCtl.setScheduleStatus, {
-      userId: userB.id, userRole: 'OPERATOR', params: { id: trip.id }, body: { status: 'CLOSED' },
+      userId: userB.id, userRole: 'OPERATOR', operatorId: operatorB.id, staffRole: 'MANAGER', params: { id: trip.id }, body: { status: 'CLOSED' },
     })
     expect(closed.status).toBe(403)
-    const deleted = await call(schedCtl.deleteSchedule, { userId: userB.id, userRole: 'OPERATOR', params: { id: trip.id } })
+    const deleted = await call(schedCtl.deleteSchedule, { userId: userB.id, userRole: 'OPERATOR', operatorId: operatorB.id, staffRole: 'MANAGER', params: { id: trip.id } })
     expect(deleted.status).toBe(403)
   })
 
   it('does not let a generated trip be deleted (it would just be recreated)', async () => {
     const trip = await prisma.schedule.findFirstOrThrow({ where: { busId: bus1.id } })
-    const out = await call(schedCtl.deleteSchedule, { userId: userA.id, userRole: 'OPERATOR', params: { id: trip.id } })
+    const out = await call(schedCtl.deleteSchedule, { userId: userA.id, userRole: 'OPERATOR', operatorId: operatorA.id, staffRole: 'MANAGER', params: { id: trip.id } })
     expect(out.status).toBe(409)
   })
 
@@ -232,7 +234,7 @@ describe.skipIf(!TEST_URL)('recurring schedules (database)', () => {
   it('keeps an existing booking when its trip is closed', async () => {
     const booking = await prisma.booking.findFirstOrThrow({ where: { userId: customer.id } })
     await call(schedCtl.setScheduleStatus, {
-      userId: userA.id, userRole: 'OPERATOR', params: { id: booking.scheduleId }, body: { status: 'CLOSED' },
+      userId: userA.id, userRole: 'OPERATOR', operatorId: operatorA.id, staffRole: 'MANAGER', params: { id: booking.scheduleId }, body: { status: 'CLOSED' },
     })
     const still = await prisma.booking.findUniqueOrThrow({ where: { id: booking.id } })
     expect(still.status).toBe('PENDING')
@@ -311,7 +313,7 @@ describe.skipIf(!TEST_URL)('recurring schedules (database)', () => {
     expect(b.status).toBe(201)
 
     const paused = await call(tplCtl.setTemplateActive, {
-      userId: userB.id, userRole: 'OPERATOR', params: { id: t.id }, body: { active: false },
+      userId: userB.id, userRole: 'OPERATOR', operatorId: operatorB.id, staffRole: 'MANAGER', params: { id: t.id }, body: { active: false },
     })
     expect(paused.status).toBe(200)
     expect(paused.body.data.removed).toBe(trips.length - 1)
@@ -322,7 +324,7 @@ describe.skipIf(!TEST_URL)('recurring schedules (database)', () => {
     expect(await tripsOf(t.id)).toHaveLength(1)
 
     const resumed = await call(tplCtl.setTemplateActive, {
-      userId: userB.id, userRole: 'OPERATOR', params: { id: t.id }, body: { active: true },
+      userId: userB.id, userRole: 'OPERATOR', operatorId: operatorB.id, staffRole: 'MANAGER', params: { id: t.id }, body: { active: true },
     })
     expect(resumed.status).toBe(200)
     const after = await tripsOf(t.id)
@@ -333,7 +335,7 @@ describe.skipIf(!TEST_URL)('recurring schedules (database)', () => {
   it("stops an operator from pausing another operator's schedule", async () => {
     const t = await prisma.scheduleTemplate.findFirstOrThrow({ where: { busId: bus1.id } })
     const out = await call(tplCtl.setTemplateActive, {
-      userId: userB.id, userRole: 'OPERATOR', params: { id: t.id }, body: { active: false },
+      userId: userB.id, userRole: 'OPERATOR', operatorId: operatorB.id, staffRole: 'MANAGER', params: { id: t.id }, body: { active: false },
     })
     expect(out.status).toBe(403)
   })
@@ -344,7 +346,7 @@ describe.skipIf(!TEST_URL)('recurring schedules (database)', () => {
     const bookedId = (await prisma.booking.findFirstOrThrow({ where: { userId: customer.id, scheduleId: { in: before.map((x) => x.id) } } })).scheduleId
 
     const out = await call(tplCtl.updateTemplate, {
-      userId: userB.id, userRole: 'OPERATOR', params: { id: t.id },
+      userId: userB.id, userRole: 'OPERATOR', operatorId: operatorB.id, staffRole: 'MANAGER', params: { id: t.id },
       body: { routeId: route.id, busId: busOfB.id, departureTime: '14:00', price: 450, daysOfWeek: [0, 1, 2, 3, 4, 5, 6] },
     })
     expect(out.status).toBe(200)
@@ -356,7 +358,7 @@ describe.skipIf(!TEST_URL)('recurring schedules (database)', () => {
   it('refuses a recurring schedule that clashes with the bus on every day', async () => {
     // bus1 already runs 05:00 every day for 6 hours, so 07:00 clashes every day
     const out = await call(tplCtl.createTemplate, {
-      userId: userA.id, userRole: 'OPERATOR',
+      userId: userA.id, userRole: 'OPERATOR', operatorId: operatorA.id, staffRole: 'MANAGER',
       body: { routeId: route.id, busId: bus1.id, departureTime: '07:00', price: 300, daysOfWeek: [0, 1, 2, 3, 4, 5, 6] },
     })
     expect(out.status).toBe(409)
@@ -365,7 +367,7 @@ describe.skipIf(!TEST_URL)('recurring schedules (database)', () => {
 
   it("will not let an operator schedule another operator's bus", async () => {
     const out = await call(tplCtl.createTemplate, {
-      userId: userA.id, userRole: 'OPERATOR',
+      userId: userA.id, userRole: 'OPERATOR', operatorId: operatorA.id, staffRole: 'MANAGER',
       body: { routeId: route.id, busId: busOfB.id, departureTime: '20:00', price: 300, daysOfWeek: [1] },
     })
     expect(out.status).toBe(403)

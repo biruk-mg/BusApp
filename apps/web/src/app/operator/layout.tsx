@@ -1,10 +1,11 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { useAuthStore } from '@/store/auth.store'
+import { useStaffGuard } from '@/hooks/useStaffGuard'
 import Link from 'next/link'
-import { Menu, X, Bus, Ticket, LayoutDashboard, LogOut, Calendar, MapPin } from 'lucide-react'
+import { Menu, Bus, Ticket, LayoutDashboard, LogOut, Calendar, MapPin, Users } from 'lucide-react'
 
 const navItems = [
   { href: '/operator', label: 'Dashboard', icon: LayoutDashboard },
@@ -12,41 +13,27 @@ const navItems = [
   { href: '/operator/schedules', label: 'Schedules', icon: Calendar },
   { href: '/operator/pickups', label: 'Pickup Points', icon: MapPin },
   { href: '/operator/bookings', label: 'Bookings', icon: Ticket },
+  { href: '/operator/staff', label: 'Staff', icon: Users },
 ]
 
 export default function OperatorLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const pathname = usePathname()
-  const { user, isAuthenticated, logout, loadFromStorage } = useAuthStore()
-  const [checking, setChecking] = useState(true)
+  const { logout } = useAuthStore()
+  // Managers (and the platform admin). Sellers and checkers are sent to their own pages.
+  const { ready, user } = useStaffGuard(['MANAGER', 'ADMIN'])
   const [navOpen, setNavOpen] = useState(false)
-
-  useEffect(() => {
-    loadFromStorage()
-    setTimeout(() => setChecking(false), 100)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  useEffect(() => {
-    if (!checking) {
-      if (!isAuthenticated || (user?.role !== 'OPERATOR' && user?.role !== 'ADMIN')) {
-        router.push('/login')
-      }
-    }
-  }, [checking, isAuthenticated, user, router])
 
   const handleLogout = () => {
     logout()
     router.push('/')
   }
 
-  if (checking) return (
+  if (!ready) return (
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#F8F8F8' }}>
       <p style={{ color: '#999' }}>Loading...</p>
     </div>
   )
-
-  if (!isAuthenticated || (user?.role !== 'OPERATOR' && user?.role !== 'ADMIN')) return null
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', background: '#F8F8F8' }}>
@@ -78,13 +65,13 @@ export default function OperatorLayout({ children }: { children: React.ReactNode
               Ethio<span style={{ color: '#C0392B' }}>Bus</span>
             </span>
           </div>
-          <p style={{ fontSize: '11px', color: 'rgba(255,255,255,0.3)', marginLeft: '36px' }}>Operator Portal</p>
+          <p style={{ fontSize: '11px', color: 'rgba(255,255,255,0.3)', marginLeft: '36px' }}>{user?.staff?.companyName || 'Operator Portal'}</p>
           <p style={{ fontSize: '11px', color: '#D4A017', marginLeft: '36px', marginTop: '2px' }}>{user?.name}</p>
         </div>
 
         {/* Nav */}
         <nav style={{ flex: 1, padding: '16px 12px' }}>
-          {navItems.map((item) => {
+          {navItems.filter((item) => item.href !== '/operator/staff' || user?.role !== 'ADMIN').map((item) => {
             const Icon = item.icon
             const isActive = pathname === item.href
             return (

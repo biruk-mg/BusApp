@@ -4,6 +4,10 @@ import jwt from 'jsonwebtoken'
 export interface AuthRequest extends Request {
   userId?: string
   userRole?: string
+  // Set by the staff middleware (middleware/staff.ts), never from the request:
+  operatorId?: string
+  staffRole?: 'MANAGER' | 'SELLER' | 'CHECKER'
+  isAdmin?: boolean
 }
 
 export const authenticate = (
@@ -40,18 +44,6 @@ export const authorizeAdmin = (
 ): void => {
   if (req.userRole !== 'ADMIN') {
     res.status(403).json({ success: false, error: 'Admin access required' })
-    return
-  }
-  next()
-}
-
-export const authorizeOperatorOrAdmin = (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction
-): void => {
-  if (req.userRole !== 'OPERATOR' && req.userRole !== 'ADMIN') {
-    res.status(403).json({ success: false, error: 'Operator access required' })
     return
   }
   next()

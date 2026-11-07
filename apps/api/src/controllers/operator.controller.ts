@@ -2,6 +2,7 @@ import { Request, Response } from 'express'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma'
 import { AuthRequest } from '../middleware/auth'
+import { companyOf } from '../middleware/staff'
 
 const createBusSchema = z.object({
   plateNumber: z.string().min(2),
@@ -12,15 +13,11 @@ const createBusSchema = z.object({
 // ─── Get Operator Profile ────────────────────────────────
 export const getOperatorProfile = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const userId = req.userId!
-    const user = await prisma.user.findUnique({ where: { id: userId } })
-    if (!user) {
-      res.status(404).json({ success: false, error: 'User not found' })
-      return
-    }
+    const operatorId = companyOf(req, res)
+    if (!operatorId) return
 
-    const operator = await prisma.operator.findFirst({
-      where: { phone: user.phone },
+    const operator = await prisma.operator.findUnique({
+      where: { id: operatorId },
       include: {
         buses: {
           include: {
@@ -41,24 +38,11 @@ export const getOperatorProfile = async (req: AuthRequest, res: Response): Promi
 // ─── Get Operator Buses ──────────────────────────────────
 export const getOperatorBuses = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const userId = req.userId!
-    const user = await prisma.user.findUnique({ where: { id: userId } })
-    if (!user) {
-      res.status(404).json({ success: false, error: 'User not found' })
-      return
-    }
-
-    const operator = await prisma.operator.findFirst({
-      where: { phone: user.phone }
-    })
-
-    if (!operator) {
-      res.status(404).json({ success: false, error: 'Operator not found' })
-      return
-    }
+    const operatorId = companyOf(req, res)
+    if (!operatorId) return
 
     const buses = await prisma.bus.findMany({
-      where: { operatorId: operator.id },
+      where: { operatorId },
       include: {
         _count: { select: { schedules: true } }
       }
@@ -74,31 +58,18 @@ export const getOperatorBuses = async (req: AuthRequest, res: Response): Promise
 // ─── Create Bus ──────────────────────────────────────────
 export const createBus = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const userId = req.userId!
     const parsed = createBusSchema.safeParse(req.body)
     if (!parsed.success) {
       res.status(400).json({ success: false, error: parsed.error.issues[0].message })
       return
     }
 
-    const user = await prisma.user.findUnique({ where: { id: userId } })
-    if (!user) {
-      res.status(404).json({ success: false, error: 'User not found' })
-      return
-    }
-
-    const operator = await prisma.operator.findFirst({
-      where: { phone: user.phone }
-    })
-
-    if (!operator) {
-      res.status(404).json({ success: false, error: 'Operator account not found' })
-      return
-    }
+    const operatorId = companyOf(req, res)
+    if (!operatorId) return
 
     const bus = await prisma.bus.create({
       data: {
-        operatorId: operator.id,
+        operatorId,
         plateNumber: parsed.data.plateNumber,
         totalSeats: parsed.data.totalSeats,
         busType: parsed.data.busType,
@@ -115,26 +86,13 @@ export const createBus = async (req: AuthRequest, res: Response): Promise<void> 
 // ─── Get Operator Bookings ───────────────────────────────
 export const getOperatorBookings = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const userId = req.userId!
-    const user = await prisma.user.findUnique({ where: { id: userId } })
-    if (!user) {
-      res.status(404).json({ success: false, error: 'User not found' })
-      return
-    }
-
-    const operator = await prisma.operator.findFirst({
-      where: { phone: user.phone }
-    })
-
-    if (!operator) {
-      res.status(404).json({ success: false, error: 'Operator not found' })
-      return
-    }
+    const operatorId = companyOf(req, res)
+    if (!operatorId) return
 
     const bookings = await prisma.booking.findMany({
       where: {
         schedule: {
-          bus: { operatorId: operator.id }
+          bus: { operatorId }
         }
       },
       include: {
@@ -168,15 +126,11 @@ export const getOperatorBookings = async (req: AuthRequest, res: Response): Prom
 // ─── Get Operator Stats ──────────────────────────────────
 export const getOperatorStats = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const userId = req.userId!
-    const user = await prisma.user.findUnique({ where: { id: userId } })
-    if (!user) {
-      res.status(404).json({ success: false, error: 'User not found' })
-      return
-    }
+    const operatorId = companyOf(req, res)
+    if (!operatorId) return
 
-    const operator = await prisma.operator.findFirst({
-      where: { phone: user.phone },
+    const operator = await prisma.operator.findUnique({
+      where: { id: operatorId },
       include: { _count: { select: { buses: true } } }
     })
 
@@ -187,7 +141,7 @@ export const getOperatorStats = async (req: AuthRequest, res: Response): Promise
 
     const bookings = await prisma.booking.findMany({
       where: {
-        schedule: { bus: { operatorId: operator.id } }
+        schedule: { bus: { operatorId } }
       },
       select: { totalPrice: true, status: true }
     })
@@ -211,12 +165,8 @@ export const getOperatorStats = async (req: AuthRequest, res: Response): Promise
 // ─── Get Revenue Analytics ───────────────────────────────
 export const getRevenueAnalytics = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const userId = req.userId!
-    const user = await prisma.user.findUnique({ where: { id: userId } })
-    if (!user) { res.status(404).json({ success: false, error: 'User not found' }); return }
-
-    const operator = await prisma.operator.findFirst({ where: { phone: user.phone } })
-    if (!operator) { res.status(404).json({ success: false, error: 'Operator not found' }); return }
+    const operatorId = companyOf(req, res)
+    if (!operatorId) return
 
     const last7Days = Array.from({ length: 7 }, (_, i) => {
       const date = new Date()
@@ -226,7 +176,7 @@ export const getRevenueAnalytics = async (req: AuthRequest, res: Response): Prom
 
     const bookings = await prisma.booking.findMany({
       where: {
-        schedule: { bus: { operatorId: operator.id } },
+        schedule: { bus: { operatorId } },
         createdAt: { gte: last7Days[0] }
       },
       include: {
@@ -280,15 +230,11 @@ export const getRevenueAnalytics = async (req: AuthRequest, res: Response): Prom
 // ─── Get Schedule Availability ───────────────────────────
 export const getScheduleAvailability = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const userId = req.userId!
-    const user = await prisma.user.findUnique({ where: { id: userId } })
-    if (!user) { res.status(404).json({ success: false, error: 'User not found' }); return }
-
-    const operator = await prisma.operator.findFirst({ where: { phone: user.phone } })
-    if (!operator) { res.status(404).json({ success: false, error: 'Operator not found' }); return }
+    const operatorId = companyOf(req, res)
+    if (!operatorId) return
 
     const schedules = await prisma.schedule.findMany({
-      where: { bus: { operatorId: operator.id } },
+      where: { bus: { operatorId } },
       include: {
         route: true,
         bus: true,
