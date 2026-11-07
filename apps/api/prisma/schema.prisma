@@ -134,6 +134,11 @@ model Booking {
   voidedByStaff   OperatorStaff? @relation("StaffVoids", fields: [voidedByStaffId], references: [id], onDelete: Restrict)
   voidReason      String?
 
+  // Boarding (set by the ticket checker when the passenger gets on the bus)
+  boardedAt        DateTime?
+  boardedByStaffId String?
+  boardedByStaff   OperatorStaff? @relation("StaffBoardings", fields: [boardedByStaffId], references: [id], onDelete: Restrict)
+
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
@@ -248,6 +253,7 @@ model OperatorStaff {
   active     Boolean   @default(true)
   sales      Booking[] @relation("StaffSales")
   voids      Booking[] @relation("StaffVoids")
+  boardings  Booking[] @relation("StaffBoardings")
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 

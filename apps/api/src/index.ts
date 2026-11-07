@@ -13,6 +13,7 @@ import bookingRoutes from './routes/booking.routes'
 import operatorRoutes from './routes/operator.routes'
 import paymentRoutes from './routes/payment.routes'
 import counterRoutes from './routes/counter.routes'
+import checkinRoutes from './routes/checkin.routes'
 import ticketRoutes from './routes/ticket.routes'
 import { maybeTopUp } from './lib/recurring'
 
@@ -61,6 +62,7 @@ app.use('/api/v1/operator', operatorRoutes)
 app.use('/api/v1/payments', paymentRoutes)
 app.use('/api/v1/counter', counterRoutes)
 app.use('/api/v1/tickets', ticketRoutes)
+app.use('/api/v1/checkin', checkinRoutes)
 // ─── Swagger Docs ────────────────────────────────────────
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec))
 
