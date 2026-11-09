@@ -8,6 +8,8 @@ export interface StaffContext {
   staffId: string
   operatorId: string
   role: StaffRoleValue
+  /** The company is suspended by the platform admin: staff may log in but not work. */
+  suspended: boolean
 }
 
 const isUniqueError = (e: unknown) => (e as { code?: string })?.code === 'P2002'
@@ -28,6 +30,16 @@ export async function getStaffContext(
   userId: string,
   client: PrismaClient = defaultPrisma
 ): Promise<StaffContext | null> {
+  const base = await findStaff(userId, client)
+  if (!base) return null
+  const operator = await client.operator.findUnique({ where: { id: base.operatorId }, select: { status: true } })
+  return { ...base, suspended: operator?.status === 'SUSPENDED' }
+}
+
+async function findStaff(
+  userId: string,
+  client: PrismaClient
+): Promise<Omit<StaffContext, 'suspended'> | null> {
   const existing = await client.operatorStaff.findUnique({ where: { userId } })
   if (existing) {
     return existing.active
@@ -61,5 +73,10 @@ export async function describeStaff(userId: string, client: PrismaClient = defau
     where: { id: ctx.operatorId },
     select: { companyName: true },
   })
-  return { role: ctx.role, operatorId: ctx.operatorId, companyName: operator?.companyName ?? '' }
+  return {
+    role: ctx.role,
+    operatorId: ctx.operatorId,
+    companyName: operator?.companyName ?? '',
+    suspended: ctx.suspended,
+  }
 }

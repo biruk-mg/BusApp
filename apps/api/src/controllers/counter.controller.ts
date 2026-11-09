@@ -120,7 +120,7 @@ export const createCounterSale = async (req: AuthRequest, res: Response): Promis
     const { scheduleId, seatNumbers } = input
     const now = new Date()
 
-    const schedule = await validateTripForSale({ scheduleId, seatNumbers, pickupPointId, dropoffPointId, operatorId, now })
+    const schedule = await validateTripForSale({ channel: 'COUNTER', scheduleId, seatNumbers, pickupPointId, dropoffPointId, operatorId, now })
 
     // Link the ticket to the passenger's account when they have one, so it also
     // shows in their My Bookings.

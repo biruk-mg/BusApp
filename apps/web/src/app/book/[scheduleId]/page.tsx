@@ -18,6 +18,8 @@ interface ScheduleDetail {
   bus: { totalSeats: number; busType: string; plateNumber: string; operator: { id: string; companyName: string } }
   availableSeats: number
   status: 'OPEN' | 'CLOSED'
+  // false when the company is suspended or a demo company
+  bookable?: boolean
 }
 
 interface Departure {
@@ -144,7 +146,7 @@ export default function BookPage() {
   : []
 
   const pickupMissing = pickupPoints.length > 0 && !pickupId
-  const canBook = selectedSeats.length === passengers && !pickupMissing && schedule?.status !== 'CLOSED'
+  const canBook = selectedSeats.length === passengers && !pickupMissing && schedule?.status !== 'CLOSED' && schedule?.bookable !== false
 
   const toggleSeat = (seat: string) => {
     if (bookedSeats.includes(seat)) return
@@ -228,6 +230,11 @@ export default function BookPage() {
       </div>
 
       <div className="page-pad" style={{ maxWidth: '900px', margin: '0 auto', padding: '32px 80px' }}>
+        {schedule.status !== 'CLOSED' && schedule.bookable === false && (
+          <div style={{ background: '#FEF2F2', border: '1px solid #F5C6C6', color: '#C0392B', borderRadius: '12px', padding: '16px 20px', marginBottom: '20px', fontSize: '14px', fontWeight: 600 }}>
+            This bus company is not taking online bookings right now.
+          </div>
+        )}
         {schedule.status === 'CLOSED' && (
           <div style={{ background: '#FEF2F2', border: '1px solid #F5C6C6', color: '#C0392B', borderRadius: '12px', padding: '16px 20px', marginBottom: '20px', fontSize: '14px', fontWeight: 600 }}>
             This trip is closed and no longer takes bookings.

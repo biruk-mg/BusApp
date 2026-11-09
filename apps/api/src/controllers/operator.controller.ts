@@ -28,7 +28,9 @@ export const getOperatorProfile = async (req: AuthRequest, res: Response): Promi
       }
     })
 
-    res.json({ success: true, data: { operator } })
+    // The admin's private notes are not for the company
+    const { notes: _notes, ...visible } = operator ?? ({} as NonNullable<typeof operator>)
+    res.json({ success: true, data: { operator: operator ? visible : operator } })
   } catch (error) {
     console.error('GetOperatorProfile error:', error)
     res.status(500).json({ success: false, error: 'Internal server error' })

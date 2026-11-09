@@ -27,7 +27,24 @@ model Operator {
   buses       Bus[]
   pickupPoints PickupPoint[]
   staff       OperatorStaff[]
+
+  // Managed by the platform admin
+  status          OperatorStatus @default(ACTIVE)
+  suspendedAt     DateTime?
+  suspendedReason String?
+  // Demo / test company: hidden from passengers, no online bookings
+  isDemo          Boolean        @default(false)
+  // Share of ONLINE sales kept by the platform, in percent (5 = 5%).
+  // Counter sales carry no commission. Set to 0 for a pilot operator.
+  commissionPercent Float        @default(5)
+  notes           String?
+
   createdAt   DateTime @default(now())
+}
+
+enum OperatorStatus {
+  ACTIVE
+  SUSPENDED
 }
 
 model Bus {

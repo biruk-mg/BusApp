@@ -58,5 +58,7 @@ export function useStaffGuard(allowed: Allowed[]) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  return { ready, user }
+  // The platform admin suspended this person's company
+  const suspended = ready && !!user?.staff?.suspended
+  return { ready, user, suspended }
 }

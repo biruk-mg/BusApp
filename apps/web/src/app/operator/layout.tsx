@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { useAuthStore } from '@/store/auth.store'
 import { useStaffGuard } from '@/hooks/useStaffGuard'
+import SuspendedNotice from '@/components/SuspendedNotice'
 import Link from 'next/link'
 import { Menu, Bus, Ticket, LayoutDashboard, LogOut, Calendar, MapPin, Users, Banknote, Plus, ClipboardCheck } from 'lucide-react'
 
@@ -24,7 +25,7 @@ export default function OperatorLayout({ children }: { children: React.ReactNode
   const pathname = usePathname()
   const { logout } = useAuthStore()
   // Managers (and the platform admin). Sellers and checkers are sent to their own pages.
-  const { ready, user } = useStaffGuard(['MANAGER', 'ADMIN'])
+  const { ready, user, suspended } = useStaffGuard(['MANAGER', 'ADMIN'])
   const [navOpen, setNavOpen] = useState(false)
 
   const handleLogout = () => {
@@ -37,6 +38,8 @@ export default function OperatorLayout({ children }: { children: React.ReactNode
       <p style={{ color: '#999' }}>Loading...</p>
     </div>
   )
+
+  if (suspended) return <SuspendedNotice companyName={user?.staff?.companyName} />
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', background: '#F8F8F8' }}>

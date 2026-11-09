@@ -4,6 +4,7 @@ import QRCode from 'qrcode'
 import { prisma } from '../lib/prisma'
 import { AuthRequest } from '../middleware/auth'
 import { HOLD_MINUTES, releaseExpiredHolds } from '../lib/seats'
+import { PUBLIC_OPERATOR_FIELDS } from '../lib/visibility'
 import { SaleError, validateTripForSale, lockAndCheckSeats } from '../lib/sales'
 
 // ─── Validation ─────────────────────────────────────────
@@ -28,7 +29,7 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
     const dropoffPointId = parsed.data.dropoffPointId || undefined
     const userId = req.userId!
 
-    const schedule = await validateTripForSale({ scheduleId, seatNumbers, pickupPointId, dropoffPointId })
+    const schedule = await validateTripForSale({ channel: 'ONLINE', scheduleId, seatNumbers, pickupPointId, dropoffPointId })
     const now = new Date()
 
     const booking = await prisma.$transaction(async (tx) => {
@@ -91,7 +92,7 @@ export const getMyBookings = async (req: AuthRequest, res: Response): Promise<vo
       where: { userId },
       include: {
         schedule: {
-          include: { route: true, bus: { include: { operator: true } } },
+          include: { route: true, bus: { include: { operator: PUBLIC_OPERATOR_FIELDS } } },
         },
         payment: true,
       },
@@ -119,7 +120,7 @@ export const getBooking = async (req: AuthRequest, res: Response): Promise<void>
         pickupPoint: true,
         dropoffPoint: true,
         schedule: {
-          include: { route: true, bus: { include: { operator: true } } },
+          include: { route: true, bus: { include: { operator: PUBLIC_OPERATOR_FIELDS } } },
         },
         payment: true,
       },

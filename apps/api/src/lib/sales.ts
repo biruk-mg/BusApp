@@ -15,7 +15,11 @@ export class SaleError extends Error {
   }
 }
 
+export type SaleChannel = 'ONLINE' | 'COUNTER'
+
 export interface TripRequest {
+  /** Who is selling: passengers online, or staff at the counter. */
+  channel: SaleChannel
   scheduleId: string
   seatNumbers: string[]
   pickupPointId?: string
@@ -31,7 +35,7 @@ export interface TripRequest {
  * the seats exist, and the pickup / drop-off points are valid.
  */
 export async function validateTripForSale(req: TripRequest, client: PrismaClient = defaultPrisma) {
-  const { scheduleId, seatNumbers, pickupPointId, dropoffPointId, operatorId } = req
+  const { channel, scheduleId, seatNumbers, pickupPointId, dropoffPointId, operatorId } = req
   const now = req.now ?? new Date()
 
   if (new Set(seatNumbers).size !== seatNumbers.length) {
@@ -40,11 +44,19 @@ export async function validateTripForSale(req: TripRequest, client: PrismaClient
 
   const schedule = await client.schedule.findUnique({
     where: { id: scheduleId },
-    include: { bus: true },
+    include: { bus: { include: { operator: true } } },
   })
   // Another company's trip looks exactly like a trip that doesn't exist
   if (!schedule || (operatorId && schedule.bus.operatorId !== operatorId)) {
     throw new SaleError(404, 'Schedule not found')
+  }
+  // The platform admin can suspend a company, or mark it as a demo company
+  const company = schedule.bus.operator
+  if (company.status === 'SUSPENDED') {
+    throw new SaleError(409, 'This bus company is not taking bookings right now')
+  }
+  if (company.isDemo && channel === 'ONLINE') {
+    throw new SaleError(409, 'This is a demo company. Online booking is not open for it.')
   }
   if (schedule.status === 'CLOSED') {
     throw new SaleError(409, 'This trip is closed and no longer takes bookings')

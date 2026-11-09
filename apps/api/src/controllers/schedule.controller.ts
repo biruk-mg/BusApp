@@ -7,6 +7,7 @@ import { scopeOf } from '../middleware/staff'
 import { activeBookingFilter, releaseExpiredHolds } from '../lib/seats'
 import { addisDayRange, isValidDateString } from '../lib/time'
 import { maybeTopUp } from '../lib/recurring'
+import { PUBLIC_OPERATOR, PUBLIC_OPERATOR_FIELDS, isAdminRequest } from '../lib/visibility'
 
 const createScheduleSchema = z.object({
   routeId: z.string(),
@@ -60,11 +61,13 @@ export const searchSchedules = async (req: Request, res: Response): Promise<void
     if (busType && BUS_TYPES.includes(busType as BusTypeValue)) {
       busFilter.busType = busType as BusTypeValue
     }
-    if (operator) {
-      busFilter.operator = { companyName: { contains: operator, mode: 'insensitive' } }
+    // Suspended and demo companies are never shown to passengers
+    busFilter.operator = {
+      ...PUBLIC_OPERATOR,
+      ...(operator ? { companyName: { contains: operator, mode: 'insensitive' as const } } : {}),
     }
     if (operatorId) busFilter.operatorId = operatorId
-    if (Object.keys(busFilter).length > 0) where.bus = busFilter
+    where.bus = busFilter
 
     if (maxPrice !== undefined && Number.isFinite(maxPrice)) where.price = { lte: maxPrice }
 
@@ -72,7 +75,7 @@ export const searchSchedules = async (req: Request, res: Response): Promise<void
       where,
       include: {
         route: true,
-        bus: { include: { operator: true } },
+        bus: { include: { operator: PUBLIC_OPERATOR_FIELDS } },
         _count: { select: { bookings: true } },
         // Seats held by paid bookings and unpaid bookings still inside their hold
         bookings: {
@@ -109,14 +112,17 @@ export const getAllSchedules = async (req: Request, res: Response): Promise<void
   try {
     const includePast = req.query.includePast === 'true'
     const includeClosed = req.query.includeClosed === 'true'
+    // Only an admin can see suspended and demo companies' trips
+    const showHidden = req.query.includeHidden === 'true' && isAdminRequest(req)
     const schedules = await prisma.schedule.findMany({
       where: {
         ...(includePast ? {} : { departureTime: { gte: new Date() } }),
         ...(includeClosed ? {} : { status: 'OPEN' as const }),
+        ...(showHidden ? {} : { bus: { operator: PUBLIC_OPERATOR } }),
       },
       include: {
         route: true,
-        bus: { include: { operator: true } },
+        bus: { include: { operator: PUBLIC_OPERATOR_FIELDS } },
         _count: { select: { bookings: true } },
       },
       orderBy: { departureTime: 'asc' },
@@ -148,10 +154,22 @@ export const getScheduleById = async (req: Request, res: Response): Promise<void
     }
     const { bookings, ...rest } = schedule
     const booked = bookings.reduce((n, b) => n + b.seatNumbers.length, 0)
+    const company = schedule.bus.operator
     res.json({
       success: true,
       data: {
-        schedule: { ...rest, availableSeats: Math.max(0, schedule.bus.totalSeats - booked), totalSeats: schedule.bus.totalSeats },
+        schedule: {
+          ...rest,
+          // Only the public company fields: never the commission rate or notes
+          bus: {
+            ...rest.bus,
+            operator: { id: company.id, companyName: company.companyName, licenseNo: company.licenseNo, phone: company.phone },
+          },
+          availableSeats: Math.max(0, schedule.bus.totalSeats - booked),
+          totalSeats: schedule.bus.totalSeats,
+          // Open trip of a company that is active and not a demo company
+          bookable: schedule.status === 'OPEN' && schedule.bus.operator.status === 'ACTIVE' && !schedule.bus.operator.isDemo,
+        },
       },
     })
   } catch (error) {

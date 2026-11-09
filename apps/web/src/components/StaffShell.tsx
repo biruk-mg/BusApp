@@ -5,6 +5,7 @@ import { Bus, LogOut } from 'lucide-react'
 import { useAuthStore } from '@/store/auth.store'
 import { useStaffGuard, Allowed } from '@/hooks/useStaffGuard'
 import { STAFF_ROLE_LABEL } from '@/lib/staffHome'
+import SuspendedNotice from '@/components/SuspendedNotice'
 
 /**
  * A simple full-width page for staff who work on a phone (counter sellers, ticket
@@ -19,7 +20,7 @@ export default function StaffShell({
 }) {
   const router = useRouter()
   const { logout } = useAuthStore()
-  const { ready, user } = useStaffGuard(allowed)
+  const { ready, user, suspended } = useStaffGuard(allowed)
 
   if (!ready) {
     return (
@@ -28,6 +29,8 @@ export default function StaffShell({
       </div>
     )
   }
+
+  if (suspended) return <SuspendedNotice companyName={user?.staff?.companyName} />
 
   return (
     <div style={{ minHeight: '100vh', background: '#F8F8F8' }}>

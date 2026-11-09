@@ -8,6 +8,8 @@ export interface StaffInfo {
   role: StaffRole
   operatorId: string
   companyName: string
+  // The platform admin suspended this company: staff can log in but cannot work
+  suspended?: boolean
 }
 
 export interface User {

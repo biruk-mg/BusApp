@@ -37,6 +37,14 @@ export const requireStaff =
         res.status(403).json({ success: false, error: 'Operator staff access required' })
         return
       }
+      // A suspended company can't work at all: no portal, no counter sales, no check-in
+      if (ctx.suspended) {
+        res.status(403).json({
+          success: false,
+          error: "Your company's account is suspended. Please contact EthioBus.",
+        })
+        return
+      }
       if (!roles.includes(ctx.role)) {
         res.status(403).json({ success: false, error: 'Your role is not allowed to do this' })
         return
