@@ -3,15 +3,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import StaffShell from '@/components/StaffShell'
+import QrScanner from '@/components/QrScanner'
 import { api } from '@/lib/api'
 import { errorOf, addisDay } from '@/lib/counter'
 import {
-  CheckinTrip, Passenger, TripDetail, Lookup, TICKET_CODE_RE, asTicketCode,
+  CheckinTrip, Passenger, TripDetail, Lookup, TICKET_CODE_RE, asTicketCode, codeFromScan,
   seatsOf, boardedSeatsOf, isRejectedByServer,
 } from '@/lib/checkin'
 import { useAuthStore } from '@/store/auth.store'
 import { formatTime, formatDate } from '@bus/utils'
-import { ArrowLeft, ChevronLeft, ChevronRight, Check, Phone, Search, RefreshCw, TriangleAlert } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, Check, Phone, Search, RefreshCw, TriangleAlert, ScanLine } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 const card: React.CSSProperties = {
@@ -134,6 +135,7 @@ function PassengerList({ tripId, onBack, onOpenOtherTrip }: {
   const [query, setQuery] = useState('')
   const [lookup, setLookup] = useState<Lookup | null>(null)
   const [lookingUp, setLookingUp] = useState(false)
+  const [scanning, setScanning] = useState(false)
   const [busy, setBusy] = useState<Set<string>>(new Set())
   // Ticks the server has not confirmed yet (bad signal): passenger id -> what we want it to be.
   // They stay on screen as ticked, in orange, until they are saved.
@@ -173,6 +175,11 @@ function PassengerList({ tripId, onBack, onOpenOtherTrip }: {
     try {
       const res = await api.post(`/checkin/bookings/${id}/${want ? 'board' : 'unboard'}`)
       change(id, res.data.data.passenger)
+      if (res.data.data.alreadyBoarded) {
+        // Someone ticked this passenger a moment ago: a second checker, or a ticket shown twice
+        const p: Passenger = res.data.data.passenger
+        toast(`${p.name} was already ticked as boarded${p.boardedBy ? ` by ${p.boardedBy}` : ''}${p.boardedAt ? ` at ${formatTime(p.boardedAt)}` : ''}.`, { icon: '⚠️', duration: 7000 })
+      }
       setUnsaved((u) => { const { [id]: _gone, ...rest } = u; return rest })
     } catch (err) {
       if (isRejectedByServer(err)) {
@@ -206,6 +213,20 @@ function PassengerList({ tripId, onBack, onOpenOtherTrip }: {
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code, onList])
+
+  const onScan = (text: string) => {
+    setScanning(false)
+    const scanned = codeFromScan(text)
+    if (!scanned) {
+      toast.error('That QR code is not an EthioBus ticket')
+      return
+    }
+    navigator.vibrate?.(60)
+    setQuery(scanned)
+  }
+
+  // A whole ticket code that is on this trip's list: say clearly whether it is good to board
+  const matched = TICKET_CODE_RE.test(code) ? passengers.find((p) => p.ticketCode === code) ?? null : null
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -283,8 +304,18 @@ function PassengerList({ tripId, onBack, onOpenOtherTrip }: {
             style={{ width: '100%', border: '1px solid #E5E5E5', borderRadius: '10px', padding: '13px 14px 13px 36px', fontSize: '16px', boxSizing: 'border-box', background: 'white' }}
           />
         </div>
+        <button aria-label="Scan a ticket's QR code" onClick={() => setScanning(true)}
+          style={{ ...navBtn, width: 'auto', background: '#1A0A0A', color: 'white', border: 'none', gap: '6px', padding: '0 14px', fontSize: '13px', fontWeight: 600 }}>
+          <ScanLine size={18} /> Scan
+        </button>
         <button aria-label="Refresh the list" onClick={() => load()} style={navBtn}><RefreshCw size={16} /></button>
       </div>
+
+      {scanning && <QrScanner onScan={onScan} onClose={() => setScanning(false)} />}
+
+      {matched && (
+        <MatchNotice p={matched} busy={busy.has(matched.id)} onBoard={() => setBoarded(matched.id, true)} />
+      )}
 
       {lookingUp && <p style={{ color: '#999', fontSize: '13px' }}>Looking for that ticket...</p>}
       {lookup && (
@@ -367,6 +398,31 @@ function PassengerRow({ p, saving, unsaved, onToggle }: {
 }
 
 /** Shown when a typed ticket code is not on this trip's list. */
+function MatchNotice({ p, busy, onBoard }: { p: Passenger; busy: boolean; onBoard: () => void }) {
+  const used = p.boarded
+  return (
+    <div style={{ ...card, background: used ? '#FFF4E5' : '#F0FFF4', border: `1px solid ${used ? '#F0D58C' : '#BFE5CC'}` }}>
+      <div style={{ fontSize: '13px', fontWeight: 700, color: used ? '#B7791F' : '#2E8B57', marginBottom: '4px' }}>
+        {used ? '⚠️ ALREADY BOARDED' : '✅ VALID TICKET'}
+      </div>
+      <div style={{ fontSize: '18px', fontWeight: 700, color: '#1a1a1a', overflowWrap: 'anywhere' }}>{p.name}</div>
+      <div style={{ fontSize: '14px', color: '#555', marginTop: '2px' }}>
+        Seat {p.seatNumbers.join(', ')}{p.pickupPoint ? ` · ${p.pickupPoint.name}` : ''}
+      </div>
+      {used ? (
+        <div style={{ fontSize: '13px', color: '#B7791F', marginTop: '8px' }}>
+          Ticked{p.boardedAt ? ` at ${formatTime(p.boardedAt)}` : ''}{p.boardedBy ? ` by ${p.boardedBy}` : ''}. If someone else is showing this ticket, do not let them on.
+        </div>
+      ) : (
+        <button onClick={onBoard} disabled={busy}
+          style={{ marginTop: '12px', width: '100%', background: '#2E8B57', color: 'white', border: 'none', borderRadius: '12px', padding: '14px', fontSize: '16px', fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.6 : 1 }}>
+          Board {p.name}
+        </button>
+      )}
+    </div>
+  )
+}
+
 function LookupNotice({ lookup, onOpen }: { lookup: Lookup; onOpen: () => void }) {
   const voided = lookup.state === 'VOIDED'
   return (

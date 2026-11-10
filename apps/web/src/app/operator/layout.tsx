@@ -6,7 +6,7 @@ import { useAuthStore } from '@/store/auth.store'
 import { useStaffGuard } from '@/hooks/useStaffGuard'
 import SuspendedNotice from '@/components/SuspendedNotice'
 import Link from 'next/link'
-import { Menu, Bus, Ticket, LayoutDashboard, LogOut, Calendar, MapPin, Users, Banknote, Plus, ClipboardCheck } from 'lucide-react'
+import { Menu, Bus, Ticket, LayoutDashboard, LogOut, Calendar, MapPin, Users, Banknote, Plus, ClipboardCheck, Wallet } from 'lucide-react'
 
 const navItems = [
   { href: '/operator', label: 'Dashboard', icon: LayoutDashboard },
@@ -16,6 +16,7 @@ const navItems = [
   { href: '/operator/bookings', label: 'Bookings', icon: Ticket },
   { href: '/counter', label: 'Sell tickets', icon: Plus },
   { href: '/operator/counter-sales', label: 'Counter sales', icon: Banknote },
+  { href: '/operator/earnings', label: 'Earnings', icon: Wallet },
   { href: '/checker', label: 'Boarding list', icon: ClipboardCheck },
   { href: '/operator/staff', label: 'Staff', icon: Users },
 ]

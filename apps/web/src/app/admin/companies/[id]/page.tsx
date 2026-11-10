@@ -109,6 +109,9 @@ export default function CompanyDetailPage() {
           <p style={{ fontSize: '13px', color: '#999', marginTop: '4px' }}>
             {company.buses} buses · {company.upcomingTrips} upcoming trips · {company.pickupPoints} pickup points
           </p>
+          <p style={{ fontSize: '13px', marginTop: '6px' }}>
+            <Link href={`/admin/payouts/${company.id}`} style={{ color: '#C0392B', fontWeight: 600 }}>Money and payouts →</Link>
+          </p>
         </div>
         {suspended ? (
           <button onClick={reactivate} style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#2E8B57', color: 'white', border: 'none', padding: '11px 20px', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>
@@ -151,7 +154,7 @@ export default function CompanyDetailPage() {
           <div><label style={label}>Company name</label><input style={input} value={form.companyName} onChange={(e) => setForm({ ...form, companyName: e.target.value })} required /></div>
           <div><label style={label}>License number</label><input style={input} value={form.licenseNo} onChange={(e) => setForm({ ...form, licenseNo: e.target.value })} required /></div>
           <div><label style={label}>Company phone</label><input style={input} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} required /></div>
-          <div><label style={label}>Commission on online sales (%)</label><input style={input} type="number" min="0" max="50" step="0.5" value={form.commissionPercent} onChange={(e) => setForm({ ...form, commissionPercent: e.target.value })} required /></div>
+          <div><label style={label}>Commission on online sales (%)</label><p style={{ fontSize: '11px', color: '#999', margin: '0 0 6px', textTransform: 'none', letterSpacing: 0, fontWeight: 400 }}>Applies to new online sales. Sales already paid keep the rate they were made at.</p><input style={input} type="number" min="0" max="50" step="0.5" value={form.commissionPercent} onChange={(e) => setForm({ ...form, commissionPercent: e.target.value })} required /></div>
         </div>
         <div style={{ marginBottom: '16px' }}>
           <label style={label}>Notes (private)</label>

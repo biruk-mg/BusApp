@@ -46,6 +46,16 @@ export const TICKET_CODE_RE = /^[A-HJ-NP-Z2-9]{8}$/
 /** What was typed in the search box, tidied up so it can be compared with a ticket code. */
 export const asTicketCode = (text: string) => text.replace(/\s|-/g, '').toUpperCase()
 
+/**
+ * The ticket code inside what a QR scan returned: the code itself (our tickets), or a
+ * link to the ticket page that ends with it. Anything else is not one of our tickets.
+ */
+export function codeFromScan(text: string): string | null {
+  const link = text.match(/\/tickets?\/([A-Za-z0-9-]+)/i)
+  const code = asTicketCode(link ? link[1] : text)
+  return TICKET_CODE_RE.test(code) ? code : null
+}
+
 export const seatsOf = (list: Passenger[]) => list.reduce((n, p) => n + p.seatNumbers.length, 0)
 export const boardedSeatsOf = (list: Passenger[]) => seatsOf(list.filter((p) => p.boarded))
 

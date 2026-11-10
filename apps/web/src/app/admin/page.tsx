@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { api } from '@/lib/api'
 import AttentionList from '@/components/AttentionList'
@@ -44,12 +44,14 @@ export default function AdminDashboard() {
   const [data, setData] = useState<Dashboard | null>(null)
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
+  const load = useCallback(() => {
     api.get('/admin/dashboard')
       .then((res) => setData(res.data.data))
       .catch((err) => toast.error(errorOf(err, 'Failed to load the dashboard')))
       .finally(() => setLoading(false))
   }, [])
+
+  useEffect(() => { load() }, [load])
 
   if (loading) return <div style={{ color: '#999' }}>Loading dashboard...</div>
   if (!data) return null
@@ -91,7 +93,7 @@ export default function AdminDashboard() {
           </h2>
           <Link href="/admin/companies" style={{ fontSize: '13px', color: '#C0392B', fontWeight: 600, textDecoration: 'none' }}>All companies →</Link>
         </div>
-        <AttentionList items={data.attention.items} total={data.attention.total} />
+        <AttentionList items={data.attention.items} total={data.attention.total} onChanged={load} />
       </div>
 
       <div style={{ ...box, padding: 0, overflow: 'hidden' }}>

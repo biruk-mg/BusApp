@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { useAuthStore } from '@/store/auth.store'
 import Link from 'next/link'
-import { Menu, X, Bus, MapPin, Calendar, Ticket, Users, LayoutDashboard, LogOut, Building2 } from 'lucide-react'
+import { Menu, X, Bus, MapPin, Calendar, Ticket, Users, LayoutDashboard, LogOut, Building2, Wallet } from 'lucide-react'
 
 const navItems = [
   { href: '/admin', label: 'Dashboard', icon: LayoutDashboard },
@@ -12,6 +12,7 @@ const navItems = [
   { href: '/admin/routes', label: 'Routes', icon: MapPin },
   { href: '/admin/schedules', label: 'Schedules', icon: Calendar },
   { href: '/admin/bookings', label: 'Bookings', icon: Ticket },
+  { href: '/admin/payouts', label: 'Payouts', icon: Wallet },
   { href: '/admin/users', label: 'Users', icon: Users },
 ]
 

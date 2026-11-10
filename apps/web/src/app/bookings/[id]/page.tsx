@@ -282,9 +282,19 @@ export default function BookingDetailPage() {
                 Your boarding QR code appears here once payment is confirmed.
               </p>
             )}
-            <p style={{ fontSize: '11px', color: '#bbb', marginTop: '12px', fontFamily: 'monospace' }}>
-              {booking.id.slice(0, 24)}...
-            </p>
+            {isPaid && booking.status === 'CONFIRMED' && booking.ticketCode ? (
+              <p style={{ fontSize: '12px', color: '#999', marginTop: '14px', textAlign: 'center' }}>
+                Ticket code
+                <span style={{ display: 'block', fontSize: '22px', fontWeight: 700, color: '#1a1a1a', fontFamily: 'monospace', letterSpacing: '3px', marginTop: '2px' }}>
+                  {booking.ticketCode}
+                </span>
+                <span style={{ display: 'block', marginTop: '2px' }}>If the QR code does not scan, read this code to the checker.</span>
+              </p>
+            ) : (
+              <p style={{ fontSize: '11px', color: '#bbb', marginTop: '12px', fontFamily: 'monospace' }}>
+                {booking.id.slice(0, 24)}...
+              </p>
+            )}
           </div>
         </div>
 
