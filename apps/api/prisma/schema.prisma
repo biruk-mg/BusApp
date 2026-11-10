@@ -38,6 +38,7 @@ model Operator {
   // Counter sales carry no commission. Set to 0 for a pilot operator.
   commissionPercent Float        @default(5)
   notes           String?
+  payouts         Payout[]
 
   createdAt   DateTime @default(now())
 }
@@ -151,6 +152,11 @@ model Booking {
   voidedByStaff   OperatorStaff? @relation("StaffVoids", fields: [voidedByStaffId], references: [id], onDelete: Restrict)
   voidReason      String?
 
+  // The platform's share of this ONLINE booking, frozen when the payment was
+  // confirmed, so changing a company's commission later never rewrites past
+  // sales. Null = not frozen (older bookings): the company's current rate is used.
+  commissionPercent Float?
+
   // Boarding (set by the ticket checker when the passenger gets on the bus)
   boardedAt        DateTime?
   boardedByStaffId String?
@@ -182,6 +188,15 @@ model Payment {
   // real receipt can be used again for the corrected sale.
   voidedReference String?
   status    PaymentStatus @default(PENDING)
+
+  // Refund bookkeeping for online payments. The money itself is sent back by the
+  // admin (Chapa, Telebirr...); this records that it was done, so the booking
+  // leaves the "refund needed" list and the company's earnings.
+  refundedAt       DateTime?
+  refundedByUserId String?
+  refundReference  String?
+  refundNote       String?
+
   createdAt DateTime      @default(now())
 
   @@unique([method, reference])
@@ -275,4 +290,37 @@ model OperatorStaff {
   updatedAt  DateTime  @updatedAt
 
   @@index([operatorId])
+}
+
+enum PayoutMethod {
+  TELEBIRR
+  CBE_BIRR
+  BANK_TRANSFER
+  CASH
+}
+
+// Money the platform has paid out to an operator company (their share of the
+// ONLINE sales that Chapa settled to the platform). Never deleted: a mistake is
+// voided with a reason, so the history stays complete.
+model Payout {
+  id              String       @id @default(cuid())
+  operatorId      String
+  operator        Operator     @relation(fields: [operatorId], references: [id], onDelete: Restrict)
+  amount          Float
+  method          PayoutMethod
+  // The receipt / transaction number of the transfer. The same receipt can't be
+  // recorded twice for the same method.
+  reference       String?
+  // A voided payout's receipt moves here, so the correct entry can reuse it.
+  voidedReference String?
+  note            String?
+  paidAt          DateTime     @default(now())
+  createdByUserId String
+  voidedAt        DateTime?
+  voidReason      String?
+  voidedByUserId  String?
+  createdAt       DateTime     @default(now())
+
+  @@unique([method, reference])
+  @@index([operatorId, paidAt])
 }

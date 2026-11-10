@@ -91,9 +91,15 @@ async function confirmPayment(txRef: string): Promise<PaymentOutcome | null> {
       }
     }
 
+    // Freeze the platform's share now, so a later change to the company's
+    // commission never rewrites this sale
+    const trip = await tx.schedule.findUnique({
+      where: { id: booking.scheduleId },
+      select: { bus: { select: { operator: { select: { commissionPercent: true } } } } },
+    })
     await tx.booking.update({
       where: { id: booking.id },
-      data: { status: 'CONFIRMED', expiresAt: null },
+      data: { status: 'CONFIRMED', expiresAt: null, commissionPercent: trip?.bus.operator.commissionPercent ?? null },
     })
     return { bookingStatus: 'CONFIRMED', refundNeeded: false }
   })

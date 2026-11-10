@@ -157,7 +157,7 @@ async function setBoarded(req: AuthRequest, res: Response, boarded: boolean): Pr
     }
 
     // Only change the row if it is not already in the wanted state
-    await prisma.booking.updateMany({
+    const changed = await prisma.booking.updateMany({
       where: { id: booking.id, boardedAt: boarded ? null : { not: null } },
       data: boarded
         ? { boardedAt: new Date(), boardedByStaffId: req.staffId }
@@ -165,7 +165,9 @@ async function setBoarded(req: AuthRequest, res: Response, boarded: boolean): Pr
     })
 
     const updated = await prisma.booking.findUniqueOrThrow({ where: { id: booking.id }, select: passengerSelect })
-    res.json({ success: true, data: { passenger: shapePassenger(updated) } })
+    // alreadyBoarded: someone else ticked this passenger first (a second checker, or a
+    // ticket shown twice). The screen warns, so a reused ticket does not pass quietly.
+    res.json({ success: true, data: { passenger: shapePassenger(updated), alreadyBoarded: boarded && changed.count === 0 } })
   } catch (error) {
     console.error('SetBoarded error:', error)
     res.status(500).json({ success: false, error: 'Internal server error' })

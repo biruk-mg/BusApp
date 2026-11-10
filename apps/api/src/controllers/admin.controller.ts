@@ -384,7 +384,7 @@ async function buildAttention(): Promise<AttentionItem[]> {
     where: {
       source: 'ONLINE',
       status: 'CANCELLED',
-      payment: { is: { status: 'SUCCESS' } },
+      payment: { is: { status: 'SUCCESS', refundedAt: null } },
       createdAt: { gte: new Date(now.getTime() - 60 * DAY) },
     },
     include: {

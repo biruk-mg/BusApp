@@ -17,6 +17,7 @@ export const getPublicTicket = async (req: Request, res: Response): Promise<void
     const booking = await prisma.booking.findUnique({
       where: { ticketCode: code },
       include: {
+        user: { select: { name: true } },
         schedule: { include: { route: true, bus: { select: { plateNumber: true, busType: true, operator: { select: { companyName: true } } } } } },
         pickupPoint: { select: { name: true, offsetMin: true } },
         dropoffPoint: { select: { name: true } },
@@ -34,7 +35,7 @@ export const getPublicTicket = async (req: Request, res: Response): Promise<void
         ticket: {
           code,
           status,
-          passengerName: booking.passengerName,
+          passengerName: booking.passengerName ?? booking.user?.name ?? null,
           seatNumbers: booking.seatNumbers,
           totalPrice: booking.totalPrice,
           companyName: booking.schedule.bus.operator.companyName,

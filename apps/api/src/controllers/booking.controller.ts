@@ -6,6 +6,7 @@ import { AuthRequest } from '../middleware/auth'
 import { HOLD_MINUTES, releaseExpiredHolds } from '../lib/seats'
 import { PUBLIC_OPERATOR_FIELDS } from '../lib/visibility'
 import { SaleError, validateTripForSale, lockAndCheckSeats } from '../lib/sales'
+import { generateTicketCode } from '../lib/ticketCode'
 
 // ─── Validation ─────────────────────────────────────────
 const createBookingSchema = z.object({
@@ -32,39 +33,52 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
     const schedule = await validateTripForSale({ channel: 'ONLINE', scheduleId, seatNumbers, pickupPointId, dropoffPointId })
     const now = new Date()
 
-    const booking = await prisma.$transaction(async (tx) => {
-      await lockAndCheckSeats(tx, schedule, seatNumbers, now)
+    // Every ticket gets a short code (the same kind counter tickets have) and the
+    // QR code on it holds that code, so a ticket checker can verify an online
+    // ticket on the server: by scanning the QR or typing the code.
+    let booking
+    for (let attempt = 0; ; attempt++) {
+      try {
+        booking = await prisma.$transaction(async (tx) => {
+          await lockAndCheckSeats(tx, schedule, seatNumbers, now)
 
-      // Calculate total price (always on the server, never trusted from the client)
-      const totalPrice = schedule.price * seatNumbers.length
+          // Calculate total price (always on the server, never trusted from the client)
+          const totalPrice = schedule.price * seatNumbers.length
 
-      // Generate unique QR code data
-      const qrData = `BUS-${scheduleId}-${userId}-${Date.now()}`
-      const qrCode = await QRCode.toDataURL(qrData)
+          const ticketCode = generateTicketCode()
+          const qrCode = await QRCode.toDataURL(ticketCode)
 
-      // Seats are reserved, not confirmed: the booking becomes CONFIRMED only
-      // when Chapa confirms the payment.
-      return tx.booking.create({
-        data: {
-          userId,
-          scheduleId,
-          seatNumbers,
-          totalPrice,
-          status: 'PENDING',
-          expiresAt: new Date(now.getTime() + HOLD_MINUTES * 60 * 1000),
-          pickupPointId: pickupPointId ?? null,
-          dropoffPointId: dropoffPointId ?? null,
-          qrCode,
-        },
-        include: {
-          pickupPoint: true,
-          dropoffPoint: true,
-          schedule: {
-            include: { route: true, bus: true },
-          },
-        },
-      })
-    })
+          // Seats are reserved, not confirmed: the booking becomes CONFIRMED only
+          // when Chapa confirms the payment.
+          return tx.booking.create({
+            data: {
+              userId,
+              scheduleId,
+              seatNumbers,
+              totalPrice,
+              status: 'PENDING',
+              expiresAt: new Date(now.getTime() + HOLD_MINUTES * 60 * 1000),
+              pickupPointId: pickupPointId ?? null,
+              dropoffPointId: dropoffPointId ?? null,
+              ticketCode,
+              qrCode,
+            },
+            include: {
+              pickupPoint: true,
+              dropoffPoint: true,
+              schedule: {
+                include: { route: true, bus: true },
+              },
+            },
+          })
+        })
+        break
+      } catch (error) {
+        // Very rarely the random code is already taken: try again with a new one
+        if ((error as { code?: string })?.code === 'P2002' && attempt < 4) continue
+        throw error
+      }
+    }
 
     res.status(201).json({
       success: true,
