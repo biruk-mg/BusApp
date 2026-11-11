@@ -335,6 +335,16 @@ model Banner {
   linkText  String?
   linkUrl   String?
   theme     String    @default("red")
+  // A designed image replaces the text card. The wide image is required for an
+  // image banner; the phone image is optional (the wide one is used without it).
+  // They are stored here (JPEG, PNG or WebP, max 1 MB) and served by the API.
+  // imageVersion goes up on every change, so browsers never show an old picture.
+  altText         String?
+  imageData       Bytes?
+  imageMime       String?
+  mobileImageData Bytes?
+  mobileImageMime String?
+  imageVersion    Int       @default(0)
   active    Boolean   @default(true)
   sortOrder Int       @default(0)
   startsAt  DateTime?

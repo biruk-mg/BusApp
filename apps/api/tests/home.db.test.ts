@@ -74,6 +74,29 @@ const day = 24 * 3600 * 1000
 const iso = (ms: number) => new Date(Date.now() + ms).toISOString()
 const mine = (list: any[]) => list.filter((b) => String(b.title).startsWith(tag))
 
+
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+const JPG = Buffer.from('/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=', 'base64')
+const WEBP = Buffer.from('UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==', 'base64')
+
+async function upload(path: string, tok: string | undefined, bytes: Buffer | string, type: string) {
+  const res = await fetch(`${baseUrl}${path}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': type, ...(tok ? { Authorization: `Bearer ${tok}` } : {}) },
+    body: bytes as any,
+  })
+  const json = await res.json().catch(() => ({}))
+  return { status: res.status, body: json as any }
+}
+async function rawGet(path: string) {
+  const res = await fetch(`${baseUrl}${path}`)
+  return { status: res.status, headers: res.headers, bytes: Buffer.from(await res.arrayBuffer()) }
+}
+async function makeBanner(extra: Record<string, unknown> = {}) {
+  const out = await api('POST', '/api/v1/admin/banners', admin.tok, { title: `${tag} img ${Math.random()}`, ...extra })
+  return out.body.data.banner.id as string
+}
+
 let admin: { user: any; tok: string }, customer: { user: any; tok: string }
 
 describe.skipIf(!TEST_URL)('home page data and offers banner (database, real routes)', () => {
@@ -248,7 +271,7 @@ describe.skipIf(!TEST_URL)('home page data and offers banner (database, real rou
 
     it('only gives the public the fields it needs', async () => {
       const b = mine((await api('GET', '/api/v1/public/home')).body.data.banners)[0]
-      expect(Object.keys(b).sort()).toEqual(['badge', 'id', 'linkText', 'linkUrl', 'message', 'theme', 'title'])
+      expect(Object.keys(b).sort()).toEqual(['altText', 'badge', 'id', 'imageUrl', 'linkText', 'linkUrl', 'message', 'mobileImageUrl', 'theme', 'title'])
     })
 
     it('edits a banner, switches it off, and checks the dates against what is saved', async () => {
@@ -272,4 +295,117 @@ describe.skipIf(!TEST_URL)('home page data and offers banner (database, real rou
       expect((await api('DELETE', `/api/v1/admin/banners/${id}`, admin.tok)).status).toBe(404)
     })
   })
+
+  // ─── Designed image banners ──────────────────────────────
+  describe('banner images', () => {
+    it('lets only the platform admin upload or remove pictures', async () => {
+      const id = await makeBanner()
+      expect((await upload(`/api/v1/admin/banners/${id}/image`, undefined, PNG, 'image/png')).status).toBe(401)
+      expect((await upload(`/api/v1/admin/banners/${id}/image`, customer.tok, PNG, 'image/png')).status).toBe(403)
+      expect((await api('DELETE', `/api/v1/admin/banners/${id}/image`, customer.tok)).status).toBe(403)
+      expect((await prisma.banner.findUnique({ where: { id } }))!.imageMime).toBeNull()
+    })
+
+    it('refuses anything that is not a real JPEG, PNG or WebP picture', async () => {
+      const id = await makeBanner()
+      const url = `/api/v1/admin/banners/${id}/image`
+      // text pretending to be a JPEG
+      expect((await upload(url, admin.tok, Buffer.from('<html>not an image</html>'), 'image/jpeg')).status).toBe(400)
+      // a real PNG that says it is a JPEG
+      expect((await upload(url, admin.tok, PNG, 'image/jpeg')).status).toBe(400)
+      // SVG (can hold scripts) and GIF are not accepted at all
+      expect((await upload(url, admin.tok, Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>'), 'image/svg+xml')).status).toBe(415)
+      expect((await upload(url, admin.tok, Buffer.from('GIF89a'), 'image/gif')).status).toBe(415)
+      // too big (over 1 MB), even though it starts like a JPEG
+      const big = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.alloc(1024 * 1024 + 10)])
+      expect((await upload(url, admin.tok, big, 'image/jpeg')).status).toBe(413)
+      // bad slot, unknown banner
+      expect((await upload(`${url}?slot=sideways`, admin.tok, PNG, 'image/png')).status).toBe(400)
+      expect((await upload('/api/v1/admin/banners/does-not-exist/image', admin.tok, PNG, 'image/png')).status).toBe(404)
+      expect((await prisma.banner.findUnique({ where: { id } }))!.imageMime).toBeNull()
+    })
+
+    it('needs the wide picture before the phone picture', async () => {
+      const id = await makeBanner()
+      const out = await upload(`/api/v1/admin/banners/${id}/image?slot=mobile`, admin.tok, PNG, 'image/png')
+      expect(out.status).toBe(400)
+    })
+
+    it('stores a picture and serves back exactly the same bytes with safe, long-lived headers', async () => {
+      const id = await makeBanner({ altText: '10% off Addis Ababa to Hawassa' })
+      for (const [bytes, type] of [[PNG, 'image/png'], [JPG, 'image/jpeg'], [WEBP, 'image/webp']] as [Buffer, string][]) {
+        expect((await upload(`/api/v1/admin/banners/${id}/image`, admin.tok, bytes, type)).status).toBe(200)
+        const got = await rawGet(`/api/v1/public/banners/${id}/image`)
+        expect(got.status).toBe(200)
+        expect(got.bytes.equals(bytes)).toBe(true)
+        expect(got.headers.get('content-type')).toBe(type)
+        expect(got.headers.get('x-content-type-options')).toBe('nosniff')
+        expect(got.headers.get('cache-control')).toContain('immutable')
+      }
+    })
+
+    it('puts picture addresses (never picture bytes) in the home data, and a new upload changes the address', async () => {
+      await prisma.banner.deleteMany({ where: { title: { startsWith: tag } } })
+      const id = await makeBanner({ title: `${tag} pic`, altText: 'Weekend offer' })
+      await upload(`/api/v1/admin/banners/${id}/image`, admin.tok, PNG, 'image/png')
+      let home = mine((await api('GET', '/api/v1/public/home')).body.data.banners).find((b) => b.id === id)
+      expect(home.imageUrl).toBe(`/api/v1/public/banners/${id}/image?v=1`)
+      expect(home.mobileImageUrl).toBeNull()
+      expect(home.altText).toBe('Weekend offer')
+      expect(JSON.stringify(home)).not.toContain('iVBOR')
+
+      await upload(`/api/v1/admin/banners/${id}/image?slot=mobile`, admin.tok, JPG, 'image/jpeg')
+      home = mine((await api('GET', '/api/v1/public/home')).body.data.banners).find((b) => b.id === id)
+      expect(home.imageUrl).toBe(`/api/v1/public/banners/${id}/image?v=2`)
+      expect(home.mobileImageUrl).toBe(`/api/v1/public/banners/${id}/image?slot=mobile&v=2`)
+      const phone = await rawGet(home.mobileImageUrl)
+      expect(phone.bytes.equals(JPG)).toBe(true)
+      expect((await rawGet(home.imageUrl)).bytes.equals(PNG)).toBe(true)
+    })
+
+    it('tells the admin which pictures exist without sending them', async () => {
+      const id = await makeBanner({ title: `${tag} adminlist` })
+      await upload(`/api/v1/admin/banners/${id}/image`, admin.tok, PNG, 'image/png')
+      const row = (await api('GET', '/api/v1/admin/banners', admin.tok)).body.data.banners.find((b: any) => b.id === id)
+      expect(row.hasImage).toBe(true)
+      expect(row.hasMobileImage).toBe(false)
+      for (const k of ['imageData', 'mobileImageData', 'imageMime', 'mobileImageMime']) expect(row).not.toHaveProperty(k)
+      // editing the text does not drop the picture or send it back
+      const edited = await api('PATCH', `/api/v1/admin/banners/${id}`, admin.tok, { title: `${tag} adminlist2` })
+      expect(edited.body.data.banner.hasImage).toBe(true)
+      expect(edited.body.data.banner).not.toHaveProperty('imageData')
+    })
+
+    it('removes the phone picture alone, or both when the wide one is removed', async () => {
+      const id = await makeBanner({ title: `${tag} remove` })
+      await upload(`/api/v1/admin/banners/${id}/image`, admin.tok, PNG, 'image/png')
+      await upload(`/api/v1/admin/banners/${id}/image?slot=mobile`, admin.tok, JPG, 'image/jpeg')
+      const a = await api('DELETE', `/api/v1/admin/banners/${id}/image?slot=mobile`, admin.tok)
+      expect(a.body.data.banner.hasImage).toBe(true)
+      expect(a.body.data.banner.hasMobileImage).toBe(false)
+      expect((await rawGet(`/api/v1/public/banners/${id}/image?slot=mobile`)).status).toBe(404)
+      await upload(`/api/v1/admin/banners/${id}/image?slot=mobile`, admin.tok, JPG, 'image/jpeg')
+      const b = await api('DELETE', `/api/v1/admin/banners/${id}/image`, admin.tok)
+      expect(b.body.data.banner.hasImage).toBe(false)
+      expect(b.body.data.banner.hasMobileImage).toBe(false)
+      expect((await rawGet(`/api/v1/public/banners/${id}/image`)).status).toBe(404)
+      expect((await api('DELETE', '/api/v1/admin/banners/nope/image', admin.tok)).status).toBe(404)
+      const home = mine((await api('GET', '/api/v1/public/home')).body.data.banners).find((x) => x.id === id)
+      expect(home.imageUrl).toBeNull()
+    })
+
+    it('has no picture to serve for a text banner or an unknown banner', async () => {
+      const id = await makeBanner({ title: `${tag} textonly` })
+      expect((await rawGet(`/api/v1/public/banners/${id}/image`)).status).toBe(404)
+      expect((await rawGet('/api/v1/public/banners/nope/image')).status).toBe(404)
+    })
+
+    it('shows at most 10 live banners', async () => {
+      await prisma.banner.deleteMany({ where: { title: { startsWith: tag } } })
+      for (let i = 0; i < 12; i++) await api('POST', '/api/v1/admin/banners', admin.tok, { title: `${tag} many ${i}`, sortOrder: i })
+      const shown = (await api('GET', '/api/v1/public/home')).body.data.banners
+      expect(shown).toHaveLength(10)
+    })
+  })
+
 })

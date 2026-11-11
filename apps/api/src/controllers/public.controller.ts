@@ -5,6 +5,7 @@ import { maybeTopUp } from '../lib/recurring'
 
 const POPULAR_LIMIT = 8
 const POPULAR_WINDOW_DAYS = 30
+const MAX_BANNERS = 10
 
 // ─── Home page data (public) ─────────────────────────────
 // One call for everything the home page needs, so a sleeping free server only
@@ -51,10 +52,12 @@ export const getHome = async (_req: Request, res: Response): Promise<void> => {
           ],
         },
         orderBy: [{ sortOrder: 'asc' }, { createdAt: 'desc' }],
-        take: 5,
+        take: MAX_BANNERS,
+        // never the image bytes here: they are fetched separately, one at a time
         select: {
           id: true, title: true, message: true, badge: true,
           linkText: true, linkUrl: true, theme: true,
+          altText: true, imageMime: true, mobileImageMime: true, imageVersion: true,
         },
       }),
     ])
@@ -101,11 +104,51 @@ export const getHome = async (_req: Request, res: Response): Promise<void> => {
         routes,
         popular,
         stats: { routes: routes.length, companies, upcomingTrips },
-        banners,
+        banners: banners.map((b) => {
+          const url = (slot: 'desktop' | 'mobile') =>
+            `/api/v1/public/banners/${b.id}/image?${slot === 'mobile' ? 'slot=mobile&' : ''}v=${b.imageVersion}`
+          return {
+            id: b.id, title: b.title, message: b.message, badge: b.badge,
+            linkText: b.linkText, linkUrl: b.linkUrl, theme: b.theme, altText: b.altText,
+            imageUrl: b.imageMime ? url('desktop') : null,
+            mobileImageUrl: b.imageMime && b.mobileImageMime ? url('mobile') : null,
+          }
+        }),
       },
     })
   } catch (error) {
     console.error('GetHome error:', error)
+    res.status(500).json({ success: false, error: 'Internal server error' })
+  }
+}
+
+// ─── One banner picture (public) ─────────────────────────
+// The address contains the picture's version number, so the browser can keep it
+// "forever": a new upload gets a new address.
+export const getBannerImage = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const id = req.params.id as string
+    const slot = req.query.slot === 'mobile' ? 'mobile' : 'desktop'
+    const row = await prisma.banner.findUnique({
+      where: { id },
+      select: { imageData: true, imageMime: true, mobileImageData: true, mobileImageMime: true },
+    })
+    const data = slot === 'mobile' ? row?.mobileImageData : row?.imageData
+    const mime = slot === 'mobile' ? row?.mobileImageMime : row?.imageMime
+    if (!row || !data || !mime) {
+      res.status(404).json({ success: false, error: 'Image not found' })
+      return
+    }
+    res.set({
+      'Content-Type': mime,
+      'Content-Length': String(data.length),
+      'Cache-Control': 'public, max-age=31536000, immutable',
+      'X-Content-Type-Options': 'nosniff',
+      'Cross-Origin-Resource-Policy': 'cross-origin',
+    })
+    res.end(Buffer.from(data))
+  } catch (error) {
+    console.error('GetBannerImage error:', error)
     res.status(500).json({ success: false, error: 'Internal server error' })
   }
 }

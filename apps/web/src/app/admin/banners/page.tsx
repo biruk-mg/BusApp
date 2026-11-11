@@ -1,8 +1,9 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { api } from '@/lib/api'
-import { Megaphone, Plus, Pencil, Trash2, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { api, assetUrl } from '@/lib/api'
+import { prepareBannerImage } from '@/lib/imageUpload'
+import { Megaphone, Plus, Pencil, Trash2, X, ImageIcon } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { BannerSlide } from '@/components/OffersBanner'
 
@@ -14,13 +15,21 @@ interface Banner {
   linkText: string | null
   linkUrl: string | null
   theme: string
+  altText: string | null
+  hasImage: boolean
+  hasMobileImage: boolean
+  imageVersion: number
   active: boolean
   sortOrder: number
   startsAt: string | null
   endsAt: string | null
 }
 
+const imageSrc = (b: Pick<Banner, 'id' | 'imageVersion'>, slot: 'desktop' | 'mobile') =>
+  `/api/v1/public/banners/${b.id}/image?${slot === 'mobile' ? 'slot=mobile&' : ''}v=${b.imageVersion}`
+
 interface FormState {
+  altText: string
   title: string; message: string; badge: string; theme: string
   linkText: string; linkUrl: string
   startDate: string; endDate: string
@@ -28,6 +37,7 @@ interface FormState {
 }
 
 const EMPTY: FormState = {
+  altText: '',
   title: '', message: '', badge: '', theme: 'red', linkText: '', linkUrl: '',
   startDate: '', endDate: '', sortOrder: '0', active: true,
 }
@@ -56,6 +66,15 @@ export default function AdminBannersPage() {
   const [editingId, setEditingId] = useState<string | 'new' | null>(null)
   const [form, setForm] = useState<FormState>(EMPTY)
   const [saving, setSaving] = useState(false)
+  // Pictures chosen in the form but not saved yet, and removals waiting for Save
+  const [desktopFile, setDesktopFile] = useState<File | null>(null)
+  const [mobileFile, setMobileFile] = useState<File | null>(null)
+  const [removeDesktop, setRemoveDesktop] = useState(false)
+  const [removeMobile, setRemoveMobile] = useState(false)
+  const [desktopPreview, setDesktopPreview] = useState<string | null>(null)
+  const [mobilePreview, setMobilePreview] = useState<string | null>(null)
+  const desktopInput = useRef<HTMLInputElement>(null)
+  const mobileInput = useRef<HTMLInputElement>(null)
 
   const load = async () => {
     try {
@@ -70,9 +89,39 @@ export default function AdminBannersPage() {
 
   const errorOf = (err: unknown) => (err as { response?: { data?: { error?: string } } }).response?.data?.error || 'Something went wrong'
 
-  const openNew = () => { setForm(EMPTY); setEditingId('new') }
+  const editing = editingId && editingId !== 'new' ? banners.find((b) => b.id === editingId) || null : null
+
+  const resetPictures = () => {
+    setDesktopFile(null); setMobileFile(null); setRemoveDesktop(false); setRemoveMobile(false)
+    if (desktopInput.current) desktopInput.current.value = ''
+    if (mobileInput.current) mobileInput.current.value = ''
+  }
+
+  // Show the chosen file straight away (and free the memory when it changes)
+  useEffect(() => {
+    if (!desktopFile) { setDesktopPreview(null); return }
+    const url = URL.createObjectURL(desktopFile)
+    setDesktopPreview(url)
+    return () => URL.revokeObjectURL(url)
+  }, [desktopFile])
+  useEffect(() => {
+    if (!mobileFile) { setMobilePreview(null); return }
+    const url = URL.createObjectURL(mobileFile)
+    setMobilePreview(url)
+    return () => URL.revokeObjectURL(url)
+  }, [mobileFile])
+
+  // What the form will have after Save
+  const willHaveDesktop = !!desktopFile || (!!editing?.hasImage && !removeDesktop)
+  const willHaveMobile = willHaveDesktop && (!!mobileFile || (!!editing?.hasMobileImage && !removeMobile && !removeDesktop))
+  const desktopShown = desktopPreview || (editing?.hasImage && !removeDesktop ? imageSrc(editing, 'desktop') : null)
+  const mobileShown = !willHaveDesktop ? null : mobilePreview || (editing?.hasMobileImage && !removeMobile && !removeDesktop ? imageSrc(editing, 'mobile') : null)
+
+  const openNew = () => { resetPictures(); setForm(EMPTY); setEditingId('new') }
   const openEdit = (b: Banner) => {
+    resetPictures()
     setForm({
+      altText: b.altText || '',
       title: b.title, message: b.message, badge: b.badge || '', theme: b.theme,
       linkText: b.linkText || '', linkUrl: b.linkUrl || '',
       startDate: toAddisDate(b.startsAt), endDate: toAddisDate(b.endsAt),
@@ -80,20 +129,52 @@ export default function AdminBannersPage() {
     })
     setEditingId(b.id)
   }
-  const closeForm = () => { setEditingId(null); setForm(EMPTY) }
+  const closeForm = () => { setEditingId(null); setForm(EMPTY); resetPictures() }
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
     const body = {
       title: form.title, message: form.message, badge: form.badge, theme: form.theme,
-      linkText: form.linkText, linkUrl: form.linkUrl,
+      altText: form.altText, linkText: form.linkText, linkUrl: form.linkUrl,
       startsAt: startIso(form.startDate), endsAt: endIso(form.endDate),
       sortOrder: Number(form.sortOrder) || 0, active: form.active,
     }
+    let bannerId: string | null = null
     try {
-      if (editingId === 'new') await api.post('/admin/banners', body)
-      else await api.patch(`/admin/banners/${editingId}`, body)
+      // 1. the text and settings
+      if (editingId === 'new') {
+        const res = await api.post('/admin/banners', body)
+        bannerId = res.data.data.banner.id
+      } else {
+        await api.patch(`/admin/banners/${editingId}`, body)
+        bannerId = editingId as string
+      }
+      // 2. the pictures (shrunk in the browser first if they are large)
+      try {
+        if (removeDesktop) {
+          await api.delete(`/admin/banners/${bannerId}/image`)
+        } else {
+          if (desktopFile) {
+            const blob = await prepareBannerImage(desktopFile, 1600)
+            await api.put(`/admin/banners/${bannerId}/image`, blob, { headers: { 'Content-Type': blob.type } })
+          }
+          if (removeMobile) {
+            await api.delete(`/admin/banners/${bannerId}/image?slot=mobile`)
+          } else if (mobileFile) {
+            const blob = await prepareBannerImage(mobileFile, 900)
+            await api.put(`/admin/banners/${bannerId}/image?slot=mobile`, blob, { headers: { 'Content-Type': blob.type } })
+          }
+        }
+      } catch (err) {
+        // The offer itself is saved: keep the form open on it so the picture can be tried again
+        const msg = err instanceof Error && !(err as { response?: unknown }).response ? err.message : errorOf(err)
+        await load()
+        resetPictures()
+        setEditingId(bannerId)
+        toast.error(`The offer was saved, but the picture was not: ${msg}`)
+        return
+      }
       toast.success('Saved')
       closeForm()
       load()
@@ -131,8 +212,8 @@ export default function AdminBannersPage() {
         </button>
       </div>
       <p style={{ fontSize: '13px', color: '#999', marginBottom: '24px', maxWidth: '620px', lineHeight: 1.6 }}>
-        Offers appear in a banner on the home page while they are switched on and inside their dates. With several live offers, the page rotates through them in the order you set.
-        These are announcements: they do not change any ticket price.
+        Offers appear in a sliding banner on the home page while they are switched on and inside their dates. With several live offers (up to 10), the page slides through them by itself in the order you set.
+        You can type a text offer or upload a picture your designer made. These are announcements: they do not change any ticket price.
       </p>
 
       {editingId && (
@@ -147,12 +228,61 @@ export default function AdminBannersPage() {
             <BannerSlide banner={{
               title: form.title || 'Your offer title', message: form.message, badge: form.badge || null,
               linkText: form.linkText || null, linkUrl: form.linkUrl || null, theme: form.theme,
+              altText: form.altText || null, imageUrl: desktopShown, mobileImageUrl: mobileShown,
             }} />
+          </div>
+
+          <div style={{ border: '1px dashed #E0C9C6', background: '#FFFAF9', borderRadius: '12px', padding: '16px', marginBottom: '18px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', fontWeight: 600, color: '#1a1a1a', marginBottom: '4px' }}>
+              <ImageIcon size={16} color="#C0392B" /> Designed picture (optional)
+            </div>
+            <p style={{ fontSize: '12px', color: '#999', lineHeight: 1.6, marginBottom: '14px' }}>
+              Upload the banner your designer made. With a picture, the picture is the whole banner and passengers can tap it to go to the link below
+              (the text, badge, colour and button text are not shown). Big pictures are shrunk automatically.
+            </p>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '14px' }}>
+              <div>
+                <label style={label}>Wide picture · 1600 × 600 px (JPG, PNG or WebP)</label>
+                <input ref={desktopInput} type="file" accept="image/jpeg,image/png,image/webp" style={input}
+                  onChange={(e) => { setDesktopFile(e.target.files?.[0] || null); setRemoveDesktop(false) }} />
+                {editing?.hasImage && !removeDesktop && !desktopFile && (
+                  <button type="button" onClick={() => setRemoveDesktop(true)}
+                    style={{ marginTop: '8px', background: 'none', border: 'none', color: '#C0392B', fontSize: '12px', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}>
+                    Remove the current picture (on Save)
+                  </button>
+                )}
+                {removeDesktop && <div style={{ marginTop: '8px', fontSize: '12px', color: '#C0392B' }}>The picture will be removed when you save.</div>}
+              </div>
+              <div>
+                <label style={label}>Phone picture · 800 × 800 px (optional)</label>
+                <input ref={mobileInput} type="file" accept="image/jpeg,image/png,image/webp" style={{ ...input, opacity: willHaveDesktop ? 1 : 0.5 }}
+                  disabled={!willHaveDesktop}
+                  onChange={(e) => { setMobileFile(e.target.files?.[0] || null); setRemoveMobile(false) }} />
+                {!willHaveDesktop && <div style={{ marginTop: '6px', fontSize: '12px', color: '#999' }}>Choose the wide picture first.</div>}
+                {editing?.hasMobileImage && !removeMobile && !mobileFile && willHaveDesktop && (
+                  <button type="button" onClick={() => setRemoveMobile(true)}
+                    style={{ marginTop: '8px', background: 'none', border: 'none', color: '#C0392B', fontSize: '12px', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}>
+                    Remove the current phone picture (on Save)
+                  </button>
+                )}
+                {mobileShown && (
+                  <div style={{ marginTop: '10px' }}>
+                    <div style={{ fontSize: '11px', color: '#999', marginBottom: '4px' }}>Phone version</div>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={assetUrl(mobileShown)} alt="Phone version" style={{ width: '120px', height: '120px', objectFit: 'cover', borderRadius: '8px', border: '1px solid #EEE' }} />
+                  </div>
+                )}
+              </div>
+              <div style={{ gridColumn: '1 / -1' }}>
+                <label style={label}>Picture description (for people who cannot see it)</label>
+                <input style={input} value={form.altText} maxLength={200} onChange={(e) => set('altText', e.target.value)} placeholder="10% off Addis Ababa to Hawassa this weekend" />
+              </div>
+            </div>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '14px' }}>
             <div>
-              <label style={label}>Title *</label>
+              <label style={label}>Title * (your own name for the offer)</label>
               <input style={input} value={form.title} maxLength={80} required onChange={(e) => set('title', e.target.value)} placeholder="10% off Addis Ababa to Hawassa" />
             </div>
             <div>
@@ -226,6 +356,11 @@ export default function AdminBannersPage() {
               <div key={b.id} style={{ background: 'white', border: '1px solid #F0F0F0', borderRadius: '16px', padding: '16px 18px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px', flexWrap: 'wrap' }}>
                   <div style={{ minWidth: 0, flex: '1 1 260px' }}>
+                    {b.hasImage && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={assetUrl(imageSrc(b, 'desktop'))} alt={b.altText || b.title}
+                        style={{ width: '100%', maxWidth: '320px', aspectRatio: '8 / 3', objectFit: 'cover', borderRadius: '10px', border: '1px solid #EEE', marginBottom: '8px', display: 'block' }} />
+                    )}
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px', flexWrap: 'wrap' }}>
                       <span style={{ background: st.bg, color: st.color, fontSize: '11px', fontWeight: 700, padding: '3px 10px', borderRadius: '20px' }}>{st.label}</span>
                       <span style={{ fontSize: '15px', fontWeight: 600, color: '#1a1a1a' }}>{b.title}</span>
