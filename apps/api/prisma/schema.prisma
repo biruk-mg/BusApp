@@ -324,3 +324,21 @@ model Payout {
   @@unique([method, reference])
   @@index([operatorId, paidAt])
 }
+
+// An announcement shown on the home page (deals and offers). Managed by the
+// platform admin. It is only shown while active and inside its dates.
+model Banner {
+  id        String    @id @default(cuid())
+  title     String
+  message   String    @default("")
+  badge     String?
+  linkText  String?
+  linkUrl   String?
+  theme     String    @default("red")
+  active    Boolean   @default(true)
+  sortOrder Int       @default(0)
+  startsAt  DateTime?
+  endsAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}

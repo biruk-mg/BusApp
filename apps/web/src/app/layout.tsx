@@ -7,7 +7,7 @@ import Providers from './providers'
 const geist = Geist({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
-  title: 'EthioBus — Book Bus Tickets Online',
+  title: 'MugoBus — Book Bus Tickets Online',
   description: 'Book bus tickets across Ethiopia easily and securely',
 }
 

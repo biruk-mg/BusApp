@@ -15,7 +15,7 @@ export default function SuspendedNotice({ companyName }: { companyName?: string 
         <h1 style={{ fontSize: '20px', fontWeight: 700, color: '#1a1a1a', marginBottom: '8px' }}>Account suspended</h1>
         <p style={{ fontSize: '14px', color: '#666', lineHeight: 1.6, marginBottom: '20px' }}>
           {companyName ? `${companyName}'s` : "Your company's"} account is suspended, so you can't sell tickets or manage trips right now.
-          Please contact EthioBus to sort this out.
+          Please contact MugoBus to sort this out.
         </p>
         <button
           onClick={() => { logout(); router.push('/') }}

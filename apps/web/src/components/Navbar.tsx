@@ -33,11 +33,12 @@ export default function Navbar() {
             <Bus size={16} color="white" />
           </div>
           <span style={{ fontSize: '18px', fontWeight: 700, color: '#1a1a1a' }}>
-            Ethio<span style={{ color: '#C0392B' }}>Bus</span>
+            Mugo<span style={{ color: '#C0392B' }}>Bus</span>
           </span>
         </Link>
 {/* Desktop Nav */}
         <div className="nav-links" style={{ display: 'flex', alignItems: 'center', gap: '32px' }}>
+          <Link href="/search" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>Find Buses</Link>
           <Link href="/routes" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>Routes</Link>
           <Link href="/about" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>About</Link>
         </div>
@@ -47,8 +48,16 @@ export default function Navbar() {
           {isAuthenticated ? (
             <>
               <Link href="/bookings" style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', color: '#666', textDecoration: 'none' }}>
-                <Ticket size={16} /> <span style={{ display: 'none' }}>My Bookings</span>
+                <Ticket size={16} /> <span>My Bookings</span>
               </Link>
+              {user?.role === 'ADMIN' && (
+                <Link href="/admin" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>Dashboard</Link>
+              )}
+              {user?.role === 'OPERATOR' && user.staff && (
+                <Link href={homeFor(user)} style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>
+                  {user.staff.role === 'SELLER' ? 'Counter Sales' : user.staff.role === 'CHECKER' ? 'Check-in' : 'Operator Portal'}
+                </Link>
+              )}
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', color: '#1a1a1a' }}>
                 <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: '#C0392B', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
                   onClick={() => router.push('/bookings')}>
@@ -69,7 +78,7 @@ export default function Navbar() {
             <>
               <Link href="/login" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>Sign In</Link>
               <Link
-                href="/register"
+                href="/search"
                 style={{ background: '#C0392B', color: 'white', fontSize: '13px', fontWeight: 600, padding: '10px 18px', borderRadius: '8px', textDecoration: 'none', whiteSpace: 'nowrap' }}
               >
                 Book a Trip

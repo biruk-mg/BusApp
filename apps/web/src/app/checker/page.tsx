@@ -218,7 +218,7 @@ function PassengerList({ tripId, onBack, onOpenOtherTrip }: {
     setScanning(false)
     const scanned = codeFromScan(text)
     if (!scanned) {
-      toast.error('That QR code is not an EthioBus ticket')
+      toast.error('That QR code is not an MugoBus ticket')
       return
     }
     navigator.vibrate?.(60)

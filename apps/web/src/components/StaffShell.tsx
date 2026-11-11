@@ -40,7 +40,7 @@ export default function StaffShell({
             <Bus size={15} color="white" />
           </div>
           <div>
-            <div style={{ fontSize: '14px', fontWeight: 700, color: 'white' }}>{user?.staff?.companyName || 'EthioBus'}</div>
+            <div style={{ fontSize: '14px', fontWeight: 700, color: 'white' }}>{user?.staff?.companyName || 'MugoBus'}</div>
             <div style={{ fontSize: '11px', color: '#D4A017' }}>
               {user?.name}{user?.staff ? ` · ${STAFF_ROLE_LABEL[user.staff.role]}` : ''}
             </div>

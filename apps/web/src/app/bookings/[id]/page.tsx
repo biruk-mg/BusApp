@@ -198,7 +198,7 @@ export default function BookingDetailPage() {
                 <Bus size={14} color="white" />
               </div>
               <span style={{ fontSize: '16px', fontWeight: 700, color: 'white' }}>
-                Ethio<span style={{ color: '#C0392B' }}>Bus</span>
+                Mugo<span style={{ color: '#C0392B' }}>Bus</span>
                 <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.4)', fontWeight: 400, marginLeft: '8px' }}>E-Ticket</span>
               </span>
             </div>

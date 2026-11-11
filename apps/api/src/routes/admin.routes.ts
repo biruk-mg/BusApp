@@ -17,6 +17,7 @@ import {
   voidPayout,
   recordRefund,
 } from '../controllers/payout.controller'
+import { listBanners, createBanner, updateBanner, deleteBanner } from '../controllers/banner.controller'
 import { authenticate } from '../middleware/auth'
 import { requireAdmin } from '../middleware/admin'
 
@@ -41,5 +42,11 @@ router.get('/operators/:id/earnings', ...admin, getCompanyEarnings)
 router.post('/operators/:id/payouts', ...admin, createPayout)
 router.post('/payouts/:id/void', ...admin, voidPayout)
 router.post('/bookings/:id/refund', ...admin, recordRefund)
+
+// Offers shown on the home page
+router.get('/banners', ...admin, listBanners)
+router.post('/banners', ...admin, createBanner)
+router.patch('/banners/:id', ...admin, updateBanner)
+router.delete('/banners/:id', ...admin, deleteBanner)
 
 export default router

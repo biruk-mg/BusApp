@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { useAuthStore } from '@/store/auth.store'
 import Link from 'next/link'
-import { Menu, X, Bus, MapPin, Calendar, Ticket, Users, LayoutDashboard, LogOut, Building2, Wallet } from 'lucide-react'
+import { Menu, X, Bus, MapPin, Calendar, Ticket, Users, LayoutDashboard, LogOut, Building2, Wallet, Megaphone } from 'lucide-react'
 
 const navItems = [
   { href: '/admin', label: 'Dashboard', icon: LayoutDashboard },
@@ -13,6 +13,7 @@ const navItems = [
   { href: '/admin/schedules', label: 'Schedules', icon: Calendar },
   { href: '/admin/bookings', label: 'Bookings', icon: Ticket },
   { href: '/admin/payouts', label: 'Payouts', icon: Wallet },
+  { href: '/admin/banners', label: 'Offers', icon: Megaphone },
   { href: '/admin/users', label: 'Users', icon: Users },
 ]
 
@@ -62,7 +63,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           <Menu size={22} />
         </button>
         <span style={{ fontSize: '16px', fontWeight: 700, color: 'white' }}>
-          Ethio<span style={{ color: '#C0392B' }}>Bus</span>
+          Mugo<span style={{ color: '#C0392B' }}>Bus</span>
         </span>
         <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.4)' }}>Admin Portal</span>
       </div>
@@ -77,7 +78,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
               <Bus size={14} color="white" />
             </div>
             <span style={{ fontSize: '16px', fontWeight: 700, color: 'white' }}>
-              Ethio<span style={{ color: '#C0392B' }}>Bus</span>
+              Mugo<span style={{ color: '#C0392B' }}>Bus</span>
             </span>
           </div>
           <p style={{ fontSize: '11px', color: 'rgba(255,255,255,0.3)', marginLeft: '36px' }}>Admin Portal</p>

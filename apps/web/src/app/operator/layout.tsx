@@ -54,7 +54,7 @@ export default function OperatorLayout({ children }: { children: React.ReactNode
           <Menu size={22} />
         </button>
         <span style={{ fontSize: '16px', fontWeight: 700, color: 'white' }}>
-          Ethio<span style={{ color: '#C0392B' }}>Bus</span>
+          Mugo<span style={{ color: '#C0392B' }}>Bus</span>
         </span>
         <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.4)' }}>Operator Portal</span>
       </div>
@@ -69,7 +69,7 @@ export default function OperatorLayout({ children }: { children: React.ReactNode
               <Bus size={14} color="white" />
             </div>
             <span style={{ fontSize: '16px', fontWeight: 700, color: 'white' }}>
-              Ethio<span style={{ color: '#C0392B' }}>Bus</span>
+              Mugo<span style={{ color: '#C0392B' }}>Bus</span>
             </span>
           </div>
           <p style={{ fontSize: '11px', color: 'rgba(255,255,255,0.3)', marginLeft: '36px' }}>{user?.staff?.companyName || 'Operator Portal'}</p>

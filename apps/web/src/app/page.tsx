@@ -1,59 +1,63 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
-import { ArrowRight, Shield, Clock, Ticket, CheckCircle, MapPin, Star } from 'lucide-react'
+import Footer from '@/components/Footer'
+import OffersBanner, { OfferBanner } from '@/components/OffersBanner'
+import { api } from '@/lib/api'
+import { ArrowRight, Shield, Ticket, CheckCircle, Bus, MapPin } from 'lucide-react'
 
-const CITIES = [
-  'Addis Ababa', 'Adama', 'Hawassa', 'Bahir Dar',
-  'Dire Dawa', 'Jimma', 'Mekelle', 'Gondar'
+interface RoutePair { fromCity: string; toCity: string }
+interface PopularRoute {
+  fromCity: string
+  toCity: string
+  durationMin: number
+  minPrice: number
+  tripCount: number
+  operatorCount: number
+  nextDeparture: string
+}
+interface HomeData {
+  routes: RoutePair[]
+  popular: PopularRoute[]
+  stats: { routes: number; companies: number; upcomingTrips: number }
+  banners: OfferBanner[]
+}
+
+const TZ = 'Africa/Addis_Ababa'
+const CARD_COLORS = [
+  'linear-gradient(135deg, #C0392B, #8E2318)',
+  'linear-gradient(135deg, #2E8B57, #1E5C3A)',
+  'linear-gradient(135deg, #D4A017, #9A7410)',
+  'linear-gradient(135deg, #34495E, #1F2D3A)',
 ]
 
-const ROUTES = [
-  {
-    from: 'Addis Ababa', to: 'Adama',
-    price: 150, rating: 4.9, duration: '1h 30m',
-    desc: 'Quick ride to the heart of Adama city',
-    img: 'https://images.unsplash.com/photo-1580746738099-b2d5b1b0c1a8?w=400&q=80'
-  },
-  {
-    from: 'Addis Ababa', to: 'Hawassa',
-    price: 350, rating: 4.8, duration: '4h 30m',
-    desc: 'Scenic route to the beautiful lakeside city',
-    img: 'https://images.unsplash.com/photo-1516026672322-bc52d61a55d5?w=400&q=80'
-  },
-  {
-    from: 'Addis Ababa', to: 'Bahir Dar',
-    price: 550, rating: 4.9, duration: '8h',
-    desc: 'Gateway to Lake Tana and Blue Nile Falls',
-    img: 'https://images.unsplash.com/photo-1489749798305-4fea3ae63d43?w=400&q=80'
-  },
-  {
-    from: 'Addis Ababa', to: 'Jimma',
-    price: 400, rating: 4.7, duration: '6h',
-    desc: 'Journey to the coffee capital of the world',
-    img: 'https://images.unsplash.com/photo-1501854140801-50d01698950b?w=400&q=80'
-  },
-]
+// All dates and times are shown as Addis Ababa time, whatever the phone's time zone
+const addisDate = (d: Date | string) => new Date(d).toLocaleDateString('en-CA', { timeZone: TZ })
 
-const TESTIMONIALS = [
-  {
-    text: 'Booking was so easy! I got my e-ticket in seconds and the bus was exactly on time. Will definitely use EthioBus again.',
-    route: 'Addis Ababa → Hawassa',
-    name: 'Sara Tesfaye', location: 'Addis Ababa', initials: 'ST', color: '#C0392B'
-  },
-  {
-    text: 'Finally a bus booking app that works! Paid with Telebirr, selected my seat, and got the QR code instantly. Amazing.',
-    route: 'Addis Ababa → Bahir Dar',
-    name: 'Biruk Mulugeta', location: 'Addis Ababa', initials: 'BM', color: '#2E8B57'
-  },
-  {
-    text: 'The seat selection feature is brilliant. I could see exactly which seats were available and pick the best one for my trip.',
-    route: 'Addis Ababa → Jimma',
-    name: 'Hana Alemu', location: 'Jimma', initials: 'HA', color: '#8B008B'
-  },
+function formatDuration(min: number) {
+  const h = Math.floor(min / 60)
+  const m = min % 60
+  if (h === 0) return `${m}m`
+  return m === 0 ? `${h}h` : `${h}h ${m}m`
+}
+
+function formatNext(iso: string) {
+  const time = new Date(iso).toLocaleTimeString('en-US', { timeZone: TZ, hour: 'numeric', minute: '2-digit' })
+  const toDay = (s: string) => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10))
+  const diff = Math.round((toDay(addisDate(iso)) - toDay(addisDate(new Date()))) / 86400000)
+  if (diff <= 0) return `Today, ${time}`
+  if (diff === 1) return `Tomorrow, ${time}`
+  const day = new Date(iso).toLocaleDateString('en-GB', { timeZone: TZ, weekday: 'short', day: 'numeric', month: 'short' })
+  return `${day}, ${time}`
+}
+
+const STEPS = [
+  { n: '1', title: 'Search', text: 'Choose where you are going and the date, and see the trips available.' },
+  { n: '2', title: 'Choose your seat', text: 'Pick your seat on the bus map and the place where you will board.' },
+  { n: '3', title: 'Pay and travel', text: 'Pay online and get a ticket with a QR code to show when boarding.' },
 ]
 
 export default function HomePage() {
@@ -63,10 +67,33 @@ export default function HomePage() {
   const [date, setDate] = useState('')
   const [passengers, setPassengers] = useState(1)
   const [mounted, setMounted] = useState(false)
+  const [home, setHome] = useState<HomeData | null>(null)
+  const [loadError, setLoadError] = useState(false)
 
-  useEffect(() => { setMounted(true) }, [])
+  const loadHome = useCallback(async () => {
+    setLoadError(false)
+    try {
+      const res = await api.get('/public/home')
+      setHome(res.data.data as HomeData)
+    } catch {
+      setLoadError(true)
+    }
+  }, [])
 
-  const today = new Date().toISOString().split('T')[0]
+  useEffect(() => { setMounted(true); loadHome() }, [loadHome])
+
+  const today = addisDate(new Date())
+
+  // City lists come from the routes we really have: "From" lists the cities a
+  // bus leaves from, and "To" lists only the cities reachable from that city.
+  const routes = home?.routes ?? []
+  const fromCities = Array.from(new Set(routes.map((r) => r.fromCity))).sort((a, b) => a.localeCompare(b))
+  const toCities = Array.from(new Set(routes.filter((r) => r.fromCity === fromCity).map((r) => r.toCity))).sort((a, b) => a.localeCompare(b))
+
+  const handleFromChange = (value: string) => {
+    setFromCity(value)
+    if (!routes.some((r) => r.fromCity === value && r.toCity === toCity)) setToCity('')
+  }
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault()
@@ -75,6 +102,17 @@ export default function HomePage() {
   }
 
   if (!mounted) return null
+
+  const stats = home
+    ? [
+        { num: home.stats.routes, label: 'Routes' },
+        { num: home.stats.companies, label: 'Bus companies' },
+        { num: home.stats.upcomingTrips, label: 'Upcoming trips' },
+      ].filter((s) => s.num > 0)
+    : []
+
+  const fieldStyle = { width: '100%', border: '1px solid #E0E0E0', borderRadius: '8px', padding: '10px 12px', fontSize: '13px', background: '#fff', boxSizing: 'border-box' } as const
+  const labelStyle = { display: 'block', fontSize: '11px', color: '#999', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' } as const
 
   return (
     <>
@@ -120,18 +158,6 @@ export default function HomePage() {
           gap: 20px;
           margin-top: 40px;
         }
-        .testimonials-grid {
-          display: grid;
-          grid-template-columns: repeat(3, 1fr);
-          gap: 20px;
-          margin-top: 40px;
-        }
-        .footer-grid {
-          display: grid;
-          grid-template-columns: 1.5fr 1fr 1fr 1fr;
-          gap: 40px;
-          margin-bottom: 40px;
-        }
         .cta-buttons {
           display: flex;
           gap: 12px;
@@ -151,7 +177,16 @@ export default function HomePage() {
           justify-content: space-between;
           margin-bottom: 32px;
         }
+        .how-grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 20px;
+          margin-top: 40px;
+        }
         .route-card {
+          display: block;
+          text-decoration: none;
+          color: inherit;
           border: 1px solid #E5E5E5;
           border-radius: 16px;
           overflow: hidden;
@@ -169,11 +204,12 @@ export default function HomePage() {
           .why-grid {
             grid-template-columns: repeat(2, 1fr);
           }
-          .footer-grid {
-            grid-template-columns: repeat(2, 1fr);
-          }
         }
         @media (max-width: 768px) {
+          .how-grid {
+            grid-template-columns: 1fr;
+            gap: 12px;
+          }
           .hero-section {
             grid-template-columns: 1fr;
             padding: 32px 20px;
@@ -200,14 +236,6 @@ export default function HomePage() {
             grid-template-columns: repeat(2, 1fr);
             gap: 12px;
           }
-          .testimonials-grid {
-            grid-template-columns: 1fr;
-            gap: 16px;
-          }
-          .footer-grid {
-            grid-template-columns: 1fr 1fr;
-            gap: 24px;
-          }
           .section-header {
             flex-direction: column;
             align-items: flex-start;
@@ -222,9 +250,6 @@ export default function HomePage() {
             grid-template-columns: 1fr;
           }
           .why-grid {
-            grid-template-columns: 1fr;
-          }
-          .footer-grid {
             grid-template-columns: 1fr;
           }
           .hero-title {
@@ -244,7 +269,7 @@ export default function HomePage() {
           <div>
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', background: '#FEF9E7', border: '1px solid #F0D060', borderRadius: '20px', padding: '6px 14px', marginBottom: '20px' }}>
               <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#C0392B' }} />
-              <span style={{ fontSize: '12px', color: '#C0392B', fontWeight: 500 }}>Ethiopia's #1 Bus Booking Platform</span>
+              <span style={{ fontSize: '12px', color: '#C0392B', fontWeight: 500 }}>Book bus tickets online across Ethiopia</span>
             </div>
 
             <h1 className="hero-title" style={{ fontSize: '48px', fontWeight: 700, lineHeight: 1.15, color: '#1a1a1a', marginBottom: '16px' }}>
@@ -254,7 +279,7 @@ export default function HomePage() {
             </h1>
 
             <p style={{ fontSize: '16px', color: '#666', lineHeight: 1.7, marginBottom: '32px', maxWidth: '420px' }}>
-              Book bus tickets to any major Ethiopian city online — secure payments, instant e-tickets, and real-time seat selection.
+              Book your bus ticket online — secure payment, instant e-ticket and your choice of seat and pickup point.
             </p>
 
             {/* Search */}
@@ -262,54 +287,57 @@ export default function HomePage() {
               <div style={{ background: '#F8F8F8', border: '1px solid #E5E5E5', borderRadius: '16px', padding: '20px', marginBottom: '32px' }}>
                 <div className="search-grid">
                   <div>
-                    <label style={{ display: 'block', fontSize: '11px', color: '#999', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>From</label>
-                    <select value={fromCity} onChange={e => setFromCity(e.target.value)} required
-                      style={{ width: '100%', border: '1px solid #E0E0E0', borderRadius: '8px', padding: '10px 12px', fontSize: '13px', background: '#fff', boxSizing: 'border-box' }}>
-                      <option value="">Select city</option>
-                      {CITIES.map(c => <option key={c} value={c}>{c}</option>)}
+                    <label style={labelStyle}>From</label>
+                    <select value={fromCity} onChange={(e) => handleFromChange(e.target.value)} required disabled={!home} style={fieldStyle}>
+                      <option value="">{!home ? (loadError ? 'Could not load cities' : 'Loading cities…') : 'Select city'}</option>
+                      {fromCities.map((c) => <option key={c} value={c}>{c}</option>)}
                     </select>
                   </div>
                   <div>
-                    <label style={{ display: 'block', fontSize: '11px', color: '#999', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>To</label>
-                    <select value={toCity} onChange={e => setToCity(e.target.value)} required
-                      style={{ width: '100%', border: '1px solid #E0E0E0', borderRadius: '8px', padding: '10px 12px', fontSize: '13px', background: '#fff', boxSizing: 'border-box' }}>
-                      <option value="">Select city</option>
-                      {CITIES.filter(c => c !== fromCity).map(c => <option key={c} value={c}>{c}</option>)}
+                    <label style={labelStyle}>To</label>
+                    <select value={toCity} onChange={(e) => setToCity(e.target.value)} required disabled={!fromCity} style={fieldStyle}>
+                      <option value="">{fromCity ? 'Select city' : 'Choose where from first'}</option>
+                      {toCities.map((c) => <option key={c} value={c}>{c}</option>)}
                     </select>
                   </div>
                   <div>
-                    <label style={{ display: 'block', fontSize: '11px', color: '#999', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Date</label>
-                    <input type="date" value={date} min={today} onChange={e => setDate(e.target.value)} required
-                      style={{ width: '100%', border: '1px solid #E0E0E0', borderRadius: '8px', padding: '10px 12px', fontSize: '13px', background: '#fff', boxSizing: 'border-box' }} />
+                    <label style={labelStyle}>Date</label>
+                    <input type="date" value={date} min={today} onChange={(e) => setDate(e.target.value)} required style={fieldStyle} />
                   </div>
                   <div>
-                    <label style={{ display: 'block', fontSize: '11px', color: '#999', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Passengers</label>
-                    <select value={passengers} onChange={e => setPassengers(Number(e.target.value))}
-                      style={{ width: '100%', border: '1px solid #E0E0E0', borderRadius: '8px', padding: '10px 12px', fontSize: '13px', background: '#fff', boxSizing: 'border-box' }}>
-                      {[1,2,3,4,5].map(n => <option key={n} value={n}>{n} Passenger{n > 1 ? 's' : ''}</option>)}
+                    <label style={labelStyle}>Passengers</label>
+                    <select value={passengers} onChange={(e) => setPassengers(Number(e.target.value))} style={fieldStyle}>
+                      {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n} Passenger{n > 1 ? 's' : ''}</option>)}
                     </select>
                   </div>
                 </div>
-                <button type="submit"
-                  style={{ width: '100%', background: '#C0392B', color: 'white', border: 'none', borderRadius: '8px', padding: '12px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                {loadError && (
+                  <div style={{ fontSize: '12px', color: '#C0392B', marginBottom: '12px' }}>
+                    We could not load the cities.{' '}
+                    <button type="button" onClick={loadHome} style={{ background: 'none', border: 'none', color: '#C0392B', fontWeight: 600, textDecoration: 'underline', cursor: 'pointer', fontSize: '12px', padding: 0 }}>Try again</button>
+                  </div>
+                )}
+                {home && routes.length === 0 && (
+                  <div style={{ fontSize: '12px', color: '#999', marginBottom: '12px' }}>No routes are available yet. Please check back soon.</div>
+                )}
+                <button type="submit" disabled={!home || routes.length === 0}
+                  style={{ width: '100%', background: '#C0392B', color: 'white', border: 'none', borderRadius: '8px', padding: '12px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', opacity: !home || routes.length === 0 ? 0.6 : 1 }}>
                   Search Buses <ArrowRight size={16} />
                 </button>
               </div>
             </form>
 
-            {/* Stats */}
-            <div className="hero-stats">
-              {[
-                { num: '9+', label: 'Routes' },
-                { num: '500+', label: 'Happy travelers' },
-                { num: '4.9', label: 'Rating' },
-              ].map(s => (
-                <div key={s.label}>
-                  <div style={{ fontSize: '24px', fontWeight: 700, color: '#1a1a1a' }}>{s.num}</div>
-                  <div style={{ fontSize: '12px', color: '#999', marginTop: '2px' }}>{s.label}</div>
-                </div>
-              ))}
-            </div>
+            {/* Real numbers from the database */}
+            {stats.length > 0 && (
+              <div className="hero-stats">
+                {stats.map((s) => (
+                  <div key={s.label}>
+                    <div style={{ fontSize: '24px', fontWeight: 700, color: '#1a1a1a' }}>{s.num}</div>
+                    <div style={{ fontSize: '12px', color: '#999', marginTop: '2px' }}>{s.label}</div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Hero Images */}
@@ -338,6 +366,9 @@ export default function HomePage() {
           </div>
         </div>
 
+        {/* Offers and deals */}
+        <OffersBanner banners={home?.banners ?? []} />
+
         {/* Popular Routes */}
         <div className="section-padding">
           <div className="section-header">
@@ -345,35 +376,50 @@ export default function HomePage() {
               <div style={{ fontSize: '12px', color: '#C0392B', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>Explore</div>
               <h2 style={{ fontSize: '32px', fontWeight: 700, color: '#1a1a1a' }}>Popular <span style={{ color: '#C0392B' }}>Routes</span></h2>
             </div>
-            <Link href="/search" style={{ fontSize: '13px', color: '#666', border: '1px solid #E0E0E0', padding: '8px 18px', borderRadius: '8px', textDecoration: 'none', whiteSpace: 'nowrap' }}>
+            <Link href="/routes" style={{ fontSize: '13px', color: '#666', border: '1px solid #E0E0E0', padding: '8px 18px', borderRadius: '8px', textDecoration: 'none', whiteSpace: 'nowrap' }}>
               View All Routes
             </Link>
           </div>
 
-          <div className="routes-grid">
-            {ROUTES.map((route) => (
-              <div key={route.to} className="route-card"
-                onClick={() => router.push(`/search?fromCity=${encodeURIComponent(route.from)}&toCity=${encodeURIComponent(route.to)}&date=${today}&passengers=1`)}>
-                <div style={{ height: '140px', position: 'relative', overflow: 'hidden' }}>
-                  <img src={route.img} alt={route.to} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                  <div style={{ position: 'absolute', top: '10px', right: '10px', background: 'rgba(255,255,255,0.95)', fontSize: '11px', fontWeight: 600, padding: '4px 10px', borderRadius: '20px', display: 'flex', alignItems: 'center', gap: '3px' }}>
-                    <Star size={10} style={{ fill: '#F59E0B', color: '#F59E0B' }} />
-                    {route.rating}
-                  </div>
-                </div>
-                <div style={{ padding: '14px' }}>
-                  <div style={{ fontSize: '14px', fontWeight: 600, color: '#1a1a1a', marginBottom: '4px' }}>{route.from} → {route.to}</div>
-                  <div style={{ fontSize: '12px', color: '#999', marginBottom: '12px', lineHeight: 1.5 }}>{route.desc}</div>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <div style={{ fontSize: '15px', fontWeight: 700, color: '#C0392B' }}>
-                      ETB {route.price} <span style={{ fontSize: '11px', color: '#999', fontWeight: 400 }}>/ seat</span>
+          {!home ? (
+            <div style={{ color: '#999', fontSize: '14px', padding: '24px 0' }}>{loadError ? 'We could not load the routes right now.' : 'Loading routes…'}</div>
+          ) : home.popular.length === 0 ? (
+            <div style={{ border: '1px dashed #E0E0E0', borderRadius: '16px', padding: '36px 20px', textAlign: 'center', color: '#999', fontSize: '14px', lineHeight: 1.6 }}>
+              Trips will appear here as soon as bus companies add them. You can still use the search above.
+            </div>
+          ) : (
+            <div className="routes-grid">
+              {home.popular.map((route, i) => (
+                <Link
+                  key={`${route.fromCity}-${route.toCity}`}
+                  className="route-card"
+                  href={`/search?fromCity=${encodeURIComponent(route.fromCity)}&toCity=${encodeURIComponent(route.toCity)}&date=${addisDate(route.nextDeparture)}&passengers=1`}
+                >
+                  <div style={{ height: '110px', background: CARD_COLORS[i % CARD_COLORS.length], position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 14px', textAlign: 'center' }}>
+                    <div style={{ position: 'absolute', top: '10px', right: '10px', background: 'rgba(255,255,255,0.95)', fontSize: '11px', fontWeight: 600, padding: '4px 10px', borderRadius: '20px', color: '#1a1a1a' }}>
+                      {route.tripCount} trip{route.tripCount === 1 ? '' : 's'}
                     </div>
-                    <div style={{ fontSize: '11px', color: '#999' }}>{route.duration}</div>
+                    <div style={{ color: 'white', fontSize: '17px', fontWeight: 700, lineHeight: 1.3 }}>
+                      {route.fromCity}<br />
+                      <span style={{ fontSize: '13px', fontWeight: 500, opacity: 0.8 }}>to</span> {route.toCity}
+                    </div>
                   </div>
-                </div>
-              </div>
-            ))}
-          </div>
+                  <div style={{ padding: '14px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+                      <div style={{ fontSize: '15px', fontWeight: 700, color: '#C0392B' }}>
+                        <span style={{ fontSize: '11px', color: '#999', fontWeight: 400 }}>From </span>ETB {route.minPrice}
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#999' }}>{formatDuration(route.durationMin)}</div>
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#777', lineHeight: 1.6 }}>
+                      {route.operatorCount} bus compan{route.operatorCount === 1 ? 'y' : 'ies'}<br />
+                      Next: {formatNext(route.nextDeparture)}
+                    </div>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Why Choose Us */}
@@ -385,11 +431,11 @@ export default function HomePage() {
             </div>
             <div className="why-grid">
               {[
-                { icon: <CheckCircle size={22} />, title: 'Verified Operators', desc: 'All bus operators are licensed and verified for your safety and comfort' },
-                { icon: <Shield size={22} />, title: 'Secure Payments', desc: 'Pay with Telebirr, CBE Birr, or card — fully encrypted and secure' },
-                { icon: <Clock size={22} />, title: '24/7 Support', desc: 'Round-the-clock assistance wherever you are in Ethiopia' },
+                { icon: <CheckCircle size={22} />, title: 'Licensed Operators', desc: 'Every bus company on MugoBus is added by our team with its licence details' },
+                { icon: <Shield size={22} />, title: 'Secure Payments', desc: 'Pay online through Chapa. We never see or store your card or mobile-money PIN' },
+                { icon: <Bus size={22} />, title: 'Your Seat, Your Pickup', desc: 'See the seat map and choose your seat and where you will board' },
                 { icon: <Ticket size={22} />, title: 'Instant E-Ticket', desc: 'Get your QR code ticket instantly after booking — no printing needed' },
-              ].map(item => (
+              ].map((item) => (
                 <div key={item.title} style={{ background: '#fff', border: '1px solid #E5E5E5', borderRadius: '16px', padding: '28px 20px', textAlign: 'center' }}>
                   <div style={{ width: '48px', height: '48px', borderRadius: '12px', background: '#FEF2F2', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', color: '#C0392B' }}>
                     {item.icon}
@@ -402,29 +448,25 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* Testimonials */}
+        {/* How it works */}
         <div className="section-padding">
-          <div style={{ textAlign: 'center', marginBottom: '0' }}>
-            <div style={{ fontSize: '12px', color: '#C0392B', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>Testimonials</div>
-            <h2 style={{ fontSize: '32px', fontWeight: 700, color: '#1a1a1a' }}>What Travelers <span style={{ color: '#C0392B' }}>Say</span></h2>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: '12px', color: '#C0392B', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>Simple</div>
+            <h2 style={{ fontSize: '32px', fontWeight: 700, color: '#1a1a1a' }}>How it <span style={{ color: '#C0392B' }}>works</span></h2>
           </div>
-          <div className="testimonials-grid">
-            {TESTIMONIALS.map((t) => (
-              <div key={t.name} style={{ background: '#fff', border: '1px solid #E5E5E5', borderRadius: '16px', padding: '24px' }}>
-                <div style={{ color: '#F59E0B', fontSize: '16px', marginBottom: '12px' }}>★★★★★</div>
-                <p style={{ fontSize: '14px', color: '#555', lineHeight: 1.7, marginBottom: '16px', fontStyle: 'italic' }}>"{t.text}"</p>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: '#C0392B', marginBottom: '14px' }}>
-                  <MapPin size={12} />{t.route}
+          <div className="how-grid">
+            {STEPS.map((s) => (
+              <div key={s.n} style={{ background: '#fff', border: '1px solid #E5E5E5', borderRadius: '16px', padding: '24px' }}>
+                <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: '#C0392B', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '14px', marginBottom: '12px' }}>
+                  {s.n}
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: t.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: 600, color: 'white', flexShrink: 0 }}>{t.initials}</div>
-                  <div>
-                    <div style={{ fontSize: '13px', fontWeight: 600, color: '#1a1a1a' }}>{t.name}</div>
-                    <div style={{ fontSize: '11px', color: '#999' }}>{t.location}, Ethiopia</div>
-                  </div>
-                </div>
+                <div style={{ fontSize: '16px', fontWeight: 700, color: '#1a1a1a', marginBottom: '6px' }}>{s.title}</div>
+                <div style={{ fontSize: '14px', color: '#777', lineHeight: 1.6 }}>{s.text}</div>
               </div>
             ))}
+          </div>
+          <div style={{ textAlign: 'center', marginTop: '24px', fontSize: '13px' }}>
+            <Link href="/help" style={{ color: '#C0392B', fontWeight: 600, textDecoration: 'none' }}>Need help? Visit the Help Center →</Link>
           </div>
         </div>
 
@@ -442,12 +484,12 @@ export default function HomePage() {
               style={{ background: '#C0392B', color: 'white', border: 'none', padding: '14px 32px', borderRadius: '10px', fontSize: '15px', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}>
               Book a Trip <ArrowRight size={16} />
             </button>
-            <Link href="/search" style={{ background: 'transparent', color: 'white', border: '1px solid rgba(255,255,255,0.3)', padding: '14px 32px', borderRadius: '10px', fontSize: '15px', textDecoration: 'none', display: 'flex', alignItems: 'center' }}>
-              View All Routes
+            <Link href="/routes" style={{ background: 'transparent', color: 'white', border: '1px solid rgba(255,255,255,0.3)', padding: '14px 32px', borderRadius: '10px', fontSize: '15px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+              <MapPin size={16} /> View All Routes
             </Link>
           </div>
           <div className="cta-trust">
-            {['Secure booking', 'Best price guarantee', '500+ happy travelers'].map(t => (
+            {['Secure online payment', 'Instant e-ticket', 'Choose your seat'].map((t) => (
               <div key={t} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: 'rgba(255,255,255,0.4)' }}>
                 <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#D4A017' }} />
                 {t}
@@ -456,41 +498,7 @@ export default function HomePage() {
           </div>
         </section>
 
-        {/* Footer */}
-        <footer style={{ background: '#0D0505', padding: 'clamp(32px, 5vw, 48px) clamp(20px, 6vw, 80px) 24px' }}>
-          <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
-            <div className="footer-grid">
-              <div>
-                <div style={{ fontSize: '20px', fontWeight: 700, color: 'white', marginBottom: '12px' }}>
-                  Ethio<span style={{ color: '#C0392B' }}>Bus</span>
-                </div>
-                <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.35)', lineHeight: 1.7, maxWidth: '220px' }}>
-                  Ethiopia's most trusted online bus booking platform. Travel comfortably anywhere.
-                </p>
-              </div>
-              {[
-                { title: 'Routes', links: ['Addis → Adama', 'Addis → Hawassa', 'Addis → Bahir Dar', 'Addis → Jimma'] },
-                { title: 'Company', links: ['About Us', 'Careers', 'Press', 'Blog'] },
-                { title: 'Support', links: ['Help Center', 'Contact', 'FAQ', 'Refund Policy'] },
-              ].map(col => (
-                <div key={col.title}>
-                  <div style={{ fontSize: '13px', fontWeight: 600, color: 'white', marginBottom: '16px' }}>{col.title}</div>
-                  {col.links.map(l => (
-                    <div key={l} style={{ fontSize: '12px', color: 'rgba(255,255,255,0.35)', marginBottom: '10px', cursor: 'pointer' }}>{l}</div>
-                  ))}
-                </div>
-              ))}
-            </div>
-            <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-              <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.25)' }}>© 2026 EthioBus. All rights reserved.</div>
-              <div style={{ display: 'flex', gap: '20px' }}>
-                {['Privacy Policy', 'Terms of Service'].map(l => (
-                  <span key={l} style={{ fontSize: '12px', color: 'rgba(255,255,255,0.25)', cursor: 'pointer' }}>{l}</span>
-                ))}
-              </div>
-            </div>
-          </div>
-        </footer>
+        <Footer />
       </div>
     </>
   )

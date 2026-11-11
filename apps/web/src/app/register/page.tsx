@@ -44,7 +44,7 @@ export default function RegisterPage() {
               <Bus size={16} color="white" />
             </div>
             <span style={{ fontSize: '18px', fontWeight: 700, color: 'white' }}>
-              Ethio<span style={{ color: '#C0392B' }}>Bus</span>
+              Mugo<span style={{ color: '#C0392B' }}>Bus</span>
             </span>
           </Link>
 
@@ -75,14 +75,14 @@ export default function RegisterPage() {
               <Bus size={16} color="white" />
             </div>
             <span style={{ fontSize: '18px', fontWeight: 700, color: '#1a1a1a' }}>
-              Ethio<span style={{ color: '#C0392B' }}>Bus</span>
+              Mugo<span style={{ color: '#C0392B' }}>Bus</span>
             </span>
           </Link>
           <h1 style={{ fontSize: '28px', fontWeight: 700, color: '#1a1a1a', marginBottom: '8px' }}>
             Create account
           </h1>
           <p style={{ fontSize: '14px', color: '#999', marginBottom: '36px' }}>
-            Join EthioBus and book tickets easily
+            Join MugoBus and book tickets easily
           </p>
 
           <form onSubmit={handleRegister} style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>

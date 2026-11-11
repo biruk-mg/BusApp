@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
+import Footer from '@/components/Footer'
 
 const steps = [
   { n: '1', title: 'Search', text: 'Choose where you are going and the date, and see the trips available.' },
@@ -15,10 +16,10 @@ export default function AboutPage() {
       <div className="hero-pad" style={{ background: '#1A0A0A', padding: '48px 80px' }}>
         <div style={{ maxWidth: '900px', margin: '0 auto' }}>
           <h1 style={{ fontSize: '32px', fontWeight: 700, color: 'white' }}>
-            About Ethio<span style={{ color: '#D4A017' }}>Bus</span>
+            About Mugo<span style={{ color: '#D4A017' }}>Bus</span>
           </h1>
           <p style={{ fontSize: '15px', color: 'rgba(255,255,255,0.6)', marginTop: '10px', maxWidth: '560px', lineHeight: 1.6 }}>
-            EthioBus makes it simple to book bus tickets across Ethiopia, without queuing at the station.
+            MugoBus makes it simple to book bus tickets across Ethiopia, without queuing at the station.
           </p>
         </div>
       </div>
@@ -60,6 +61,7 @@ export default function AboutPage() {
           </Link>
         </div>
       </div>
+      <Footer />
     </div>
   )
 }
