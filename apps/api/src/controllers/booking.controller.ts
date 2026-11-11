@@ -5,7 +5,7 @@ import { prisma } from '../lib/prisma'
 import { AuthRequest } from '../middleware/auth'
 import { HOLD_MINUTES, releaseExpiredHolds } from '../lib/seats'
 import { PUBLIC_OPERATOR_FIELDS } from '../lib/visibility'
-import { SaleError, validateTripForSale, lockAndCheckSeats } from '../lib/sales'
+import { SaleError, validateTripForSale, lockAndCheckSeats, checkUserHoldLimit } from '../lib/sales'
 import { generateTicketCode } from '../lib/ticketCode'
 
 // ─── Validation ─────────────────────────────────────────
@@ -40,6 +40,8 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
     for (let attempt = 0; ; attempt++) {
       try {
         booking = await prisma.$transaction(async (tx) => {
+          // One account can't sit on seats it never pays for (taken before the trip lock)
+          await checkUserHoldLimit(tx, userId, seatNumbers.length, now)
           await lockAndCheckSeats(tx, schedule, seatNumbers, now)
 
           // Calculate total price (always on the server, never trusted from the client)

@@ -1,6 +1,6 @@
 import { Prisma, PrismaClient } from '@prisma/client'
 import { prisma as defaultPrisma } from './prisma'
-import { activeBookingFilter, releaseExpiredHolds, seatLabels } from './seats'
+import { HOLD_MINUTES, activeBookingFilter, releaseExpiredHolds, seatLabels } from './seats'
 
 /**
  * The seat rules shared by online bookings and counter sales.
@@ -91,6 +91,50 @@ export async function validateTripForSale(req: TripRequest, client: PrismaClient
   }
 
   return schedule
+}
+
+/** The most seats one passenger can hold unpaid at the same time, across all trips. */
+export const MAX_UNPAID_SEATS = 10
+
+/**
+ * Inside a transaction, BEFORE lockAndCheckSeats: stops one account from holding
+ * seats on many trips without paying (which would keep real passengers out).
+ * Counts the passenger's online bookings that are still unpaid and inside their hold.
+ * Paid bookings, cancelled ones and expired holds do not count.
+ *
+ * The per-passenger lock is always taken before the per-trip lock (and counter sales
+ * and payments only take the per-trip one), so the two locks can never wait on each other.
+ */
+export async function checkUserHoldLimit(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  newSeatCount: number,
+  now = new Date()
+): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'user:' + userId}))`
+
+  const unpaid = await tx.booking.findMany({
+    where: {
+      userId,
+      source: 'ONLINE',
+      status: 'PENDING',
+      OR: [
+        { expiresAt: { gt: now } },
+        { expiresAt: null, createdAt: { gt: new Date(now.getTime() - HOLD_MINUTES * 60 * 1000) } },
+      ],
+    },
+    select: { seatNumbers: true },
+  })
+  const heldSeats = unpaid.reduce((n, b) => n + b.seatNumbers.length, 0)
+
+  if (heldSeats + newSeatCount > MAX_UNPAID_SEATS) {
+    throw new SaleError(
+      409,
+      heldSeats > 0
+        ? `You already hold ${heldSeats} seat${heldSeats === 1 ? '' : 's'} that ${heldSeats === 1 ? 'is' : 'are'} not paid for yet. Please pay for them or cancel them before booking more (limit: ${MAX_UNPAID_SEATS} unpaid seats).`
+        : `You can hold at most ${MAX_UNPAID_SEATS} seats at a time.`
+    )
+  }
 }
 
 /**

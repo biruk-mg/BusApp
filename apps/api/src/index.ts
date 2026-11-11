@@ -18,11 +18,20 @@ import ticketRoutes from './routes/ticket.routes'
 import adminRoutes from './routes/admin.routes'
 import publicRoutes from './routes/public.routes'
 import { maybeTopUp } from './lib/recurring'
+import { assertEnv } from './lib/env'
 
 // Load environment variables
 dotenv.config({ path: '../../.env' })
 
+// Stop with a clear message if a required setting is missing
+assertEnv()
+
 const app: Express = express()
+
+// Render (and most hosts) put a proxy in front of the server. Trust it, so that
+// req.ip is the passenger's real address and the too-many-tries guards count per person.
+app.set('trust proxy', 1)
+app.disable('x-powered-by')
 
 /**
  * PORT: Hosting platforms (Render, Railway, etc.) provide a PORT variable.
