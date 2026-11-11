@@ -152,6 +152,14 @@ model Booking {
   voidedByStaff   OperatorStaff? @relation("StaffVoids", fields: [voidedByStaffId], references: [id], onDelete: Restrict)
   voidReason      String?
 
+  // Set when a PAID online booking is cancelled: what share of the price goes back
+  // to the passenger (100, 50 or 0, from how long before departure it was cancelled)
+  // and how much that is in birr. Null = not set (older cancellations and seats lost
+  // to a late payment): the full price is refunded.
+  cancelledAt   DateTime?
+  refundPercent Int?
+  refundAmount  Float?
+
   // The platform's share of this ONLINE booking, frozen when the payment was
   // confirmed, so changing a company's commission later never rewrites past
   // sales. Null = not frozen (older bookings): the company's current rate is used.

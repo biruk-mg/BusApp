@@ -16,6 +16,8 @@ interface BookingDetail {
   qrCode: string
   createdAt: string
   expiresAt?: string | null
+  refundPercent?: number | null
+  refundAmount?: number | null
   payment?: { status: string } | null
   source?: 'ONLINE' | 'COUNTER'
   ticketCode?: string | null
@@ -110,10 +112,19 @@ export default function BookingDetailPage() {
   }
 
   const handleCancel = async () => {
-    if (!confirm('Cancel this booking?')) return
     try {
-      await api.patch(`/bookings/${id}/cancel`)
-      toast.success('Booking cancelled')
+      // Tell the passenger what they will get back before they confirm
+      const preview = (await api.get(`/bookings/${id}/refund-preview`)).data.data as {
+        paid: boolean; percent: number | null; refundAmount: number | null
+      }
+      const message = !preview.paid
+        ? 'Cancel this booking?'
+        : preview.refundAmount && preview.refundAmount > 0
+          ? `Cancel this booking? You will get ${formatPrice(preview.refundAmount)} back (${preview.percent}% of the price), as in our Refund Policy.`
+          : 'Cancel this booking? This close to departure, our Refund Policy gives no money back.'
+      if (!confirm(message)) return
+      const res = await api.patch(`/bookings/${id}/cancel`)
+      toast.success(res.data.message || 'Booking cancelled')
       router.push('/bookings')
     } catch (err: unknown) {
       const error = err as { response?: { data?: { error?: string } } }
@@ -184,7 +195,11 @@ export default function BookingDetailPage() {
         )}
         {booking.source !== 'COUNTER' && booking.status === 'CANCELLED' && isPaid && (
           <div style={{ background: '#FFF5F5', border: '1px solid #FECACA', borderRadius: '12px', padding: '14px 16px', marginBottom: '16px', fontSize: '13px', color: '#991B1B', lineHeight: 1.5 }}>
-            We received your payment, but these seats were taken before it was confirmed. Please contact support to get a refund.
+            {booking.refundPercent == null
+              ? 'We received your payment, but these seats were taken before it was confirmed. Please contact support to get a refund.'
+              : booking.refundAmount && booking.refundAmount > 0
+                ? `You cancelled this ticket. ${formatPrice(booking.refundAmount)} (${booking.refundPercent}%) will be refunded to you, as in our Refund Policy.`
+                : 'You cancelled this ticket. This close to departure, our Refund Policy gives no money back.'}
           </div>
         )}
 

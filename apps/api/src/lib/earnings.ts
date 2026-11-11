@@ -16,8 +16,24 @@ export const EARNING_BOOKING: Prisma.BookingWhereInput = {
   payment: { is: { status: 'SUCCESS', refundedAt: null } },
 }
 
+/**
+ * A paid online ticket cancelled with a partial refund (50% or 0%): the passenger
+ * is paid back their share and the rest is the company's, like any other sale
+ * (commission included). Refunded or not, that kept share stays earned.
+ */
+export const RETAINED_BOOKING: Prisma.BookingWhereInput = {
+  source: 'ONLINE',
+  status: 'CANCELLED',
+  payment: { is: { status: 'SUCCESS' } },
+  refundPercent: { lt: 100 },
+}
+
+const EARNING_OR_RETAINED: Prisma.BookingWhereInput = { OR: [EARNING_BOOKING, RETAINED_BOOKING] }
+
 const earningSelect = {
   scheduleId: true,
+  status: true,
+  refundAmount: true,
   totalPrice: true,
   commissionPercent: true,
   seatNumbers: true,
@@ -32,8 +48,12 @@ const earningSelect = {
 
 type EarningRow = Prisma.BookingGetPayload<{ select: typeof earningSelect }>
 
+// What the company earned from this booking: the price, or only the part it kept
+const earnedPrice = (b: EarningRow) =>
+  b.status === 'CANCELLED' ? toBirr(toCents(b.totalPrice) - toCents(b.refundAmount ?? b.totalPrice)) : b.totalPrice
+
 const asInput = (b: EarningRow): EarningInput => ({
-  totalPrice: b.totalPrice,
+  totalPrice: earnedPrice(b),
   commissionPercent: b.commissionPercent,
   departureTime: b.schedule.departureTime,
 })
@@ -58,13 +78,14 @@ export async function loadEarnings(operatorId: string, client: Client = defaultP
 
   const [bookings, payouts] = await Promise.all([
     client.booking.findMany({
-      where: { ...EARNING_BOOKING, schedule: { bus: { operatorId } } },
+      where: { AND: [EARNING_OR_RETAINED, { schedule: { bus: { operatorId } } }] },
       select: earningSelect,
     }),
     client.payout.findMany({ where: { operatorId }, orderBy: [{ paidAt: 'desc' }, { createdAt: 'desc' }] }),
   ])
 
   const summary = summarizeEarnings(bookings.map(asInput), operator.commissionPercent, paidCentsOf(payouts), now)
+  summary.tickets = bookings.filter((b) => b.status !== 'CANCELLED').length // a cancelled ticket adds money, not a ticket
 
   // One line per trip, newest first
   const byTrip = new Map<string, { departureTime: Date; fromCity: string; toCity: string; tickets: number; seats: number; gross: number; commission: number }>()
@@ -76,8 +97,11 @@ export async function loadEarnings(operatorId: string, client: Client = defaultP
       toCity: b.schedule.route.toCity,
       tickets: 0, seats: 0, gross: 0, commission: 0,
     }
-    row.tickets += 1
-    row.seats += b.seatNumbers.length
+    // A cancelled ticket adds its kept money, but is not a seat that travels
+    if (b.status !== 'CANCELLED') {
+      row.tickets += 1
+      row.seats += b.seatNumbers.length
+    }
     row.gross += line.grossCents
     row.commission += line.commissionCents
     byTrip.set(b.scheduleId, row)
@@ -114,7 +138,7 @@ export async function loadAllBalances(client: Client = defaultPrisma, now: Date 
       select: { id: true, companyName: true, status: true, isDemo: true, commissionPercent: true },
       orderBy: { companyName: 'asc' },
     }),
-    client.booking.findMany({ where: EARNING_BOOKING, select: earningSelect }),
+    client.booking.findMany({ where: EARNING_OR_RETAINED, select: earningSelect }),
     client.payout.findMany({ select: { operatorId: true, amount: true, voidedAt: true, paidAt: true } }),
   ])
 
@@ -122,6 +146,7 @@ export async function loadAllBalances(client: Client = defaultPrisma, now: Date 
     const mine = bookings.filter((b) => b.schedule.bus.operatorId === o.id)
     const myPayouts = payouts.filter((p) => p.operatorId === o.id)
     const summary = summarizeEarnings(mine.map(asInput), o.commissionPercent, paidCentsOf(myPayouts), now)
+    summary.tickets = mine.filter((b) => b.status !== 'CANCELLED').length
     const last = myPayouts.filter((p) => !p.voidedAt).sort((a, b) => b.paidAt.getTime() - a.paidAt.getTime())[0]
     return {
       id: o.id,

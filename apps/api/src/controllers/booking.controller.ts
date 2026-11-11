@@ -7,6 +7,7 @@ import { HOLD_MINUTES, releaseExpiredHolds } from '../lib/seats'
 import { PUBLIC_OPERATOR_FIELDS } from '../lib/visibility'
 import { SaleError, validateTripForSale, lockAndCheckSeats, checkUserHoldLimit } from '../lib/sales'
 import { generateTicketCode } from '../lib/ticketCode'
+import { refundFor } from '../lib/refund'
 
 // ─── Validation ─────────────────────────────────────────
 const createBookingSchema = z.object({
@@ -161,50 +162,117 @@ export const getBooking = async (req: AuthRequest, res: Response): Promise<void>
 }
 
 // ─── Cancel Booking ──────────────────────────────────────
-export const cancelBooking = async (req: AuthRequest, res: Response): Promise<void> => {
+// A passenger cancels with the Refund Policy tiers (100% / 50% / 0%, by hours before
+// departure). The admin cancelling always refunds 100%. Money is only recorded here:
+// the admin sends it back and marks it done (see recordRefund).
+
+async function loadCancellable(req: AuthRequest) {
+  const booking = await prisma.booking.findUnique({
+    where: { id: req.params.id as string },
+    include: { payment: true, schedule: { select: { departureTime: true, bus: { select: { operatorId: true } } } } },
+  })
+  if (!booking) throw new SaleError(404, 'Booking not found')
+
+  // Only owner or admin can cancel
+  if (booking.userId !== req.userId && req.userRole !== 'ADMIN') throw new SaleError(403, 'Access denied')
+
+  // Counter tickets were paid at the counter: only staff can void them
+  if (booking.source === 'COUNTER') {
+    throw new SaleError(403, 'This ticket was sold at the counter. Please ask the bus company to cancel it.')
+  }
+  if (booking.status === 'CANCELLED') throw new SaleError(400, 'Booking already cancelled')
+  if (booking.status === 'COMPLETED') throw new SaleError(400, 'Cannot cancel a completed booking')
+  if (booking.boardedAt) throw new SaleError(400, 'This passenger has already boarded, so the ticket cannot be cancelled')
+
+  const byAdmin = req.userRole === 'ADMIN'
+  if (!byAdmin && booking.schedule.departureTime.getTime() <= Date.now()) {
+    throw new SaleError(400, 'This trip has already departed, so the ticket can no longer be cancelled')
+  }
+  return { booking, byAdmin }
+}
+
+const paidOnline = (b: { payment: { status: string } | null }) => b.payment?.status === 'SUCCESS'
+
+// What would I get back if I cancel now? (shown before the passenger confirms)
+export const getRefundPreview = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const id = req.params.id as string
-    const userId = req.userId!
-
-    const booking = await prisma.booking.findUnique({ where: { id } })
-
-    if (!booking) {
-      res.status(404).json({ success: false, error: 'Booking not found' })
-      return
-    }
-
-    // Only owner or admin can cancel
-    if (booking.userId !== userId && req.userRole !== 'ADMIN') {
-      res.status(403).json({ success: false, error: 'Access denied' })
-      return
-    }
-
-    // Counter tickets were paid at the counter: only staff can void them
-    if (booking.source === 'COUNTER') {
-      res.status(403).json({ success: false, error: 'This ticket was sold at the counter. Please ask the bus company to cancel it.' })
-      return
-    }
-
-    if (booking.status === 'CANCELLED') {
-      res.status(400).json({ success: false, error: 'Booking already cancelled' })
-      return
-    }
-
-    if (booking.status === 'COMPLETED') {
-      res.status(400).json({ success: false, error: 'Cannot cancel a completed booking' })
-      return
-    }
-
-    const updated = await prisma.booking.update({
-      where: { id },
-      data: { status: 'CANCELLED' },
-      include: {
-        schedule: { include: { route: true } },
+    const { booking, byAdmin } = await loadCancellable(req)
+    const paid = paidOnline(booking)
+    const refund = paid ? refundFor(booking.totalPrice, booking.schedule.departureTime, new Date(), byAdmin) : null
+    res.json({
+      success: true,
+      data: {
+        paid,
+        totalPrice: booking.totalPrice,
+        percent: refund?.percent ?? null,
+        refundAmount: refund?.refundAmount ?? null,
+        keepAmount: refund?.keepAmount ?? null,
+        hoursLeft: Math.max(0, Math.floor((booking.schedule.departureTime.getTime() - Date.now()) / 3_600_000)),
       },
     })
-
-    res.json({ success: true, message: 'Booking cancelled', data: { booking: updated } })
   } catch (error) {
+    if (error instanceof SaleError) {
+      res.status(error.status).json({ success: false, error: error.message })
+      return
+    }
+    console.error('RefundPreview error:', error)
+    res.status(500).json({ success: false, error: 'Internal server error' })
+  }
+}
+
+export const cancelBooking = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const first = await loadCancellable(req)
+    const id = first.booking.id
+
+    const result = await prisma.$transaction(async (tx) => {
+      // Same locks, same order, as payouts and refunds: the company's money first, then the trip
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'payout:' + first.booking.schedule.bus.operatorId}))`
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${first.booking.scheduleId}))`
+
+      // Read again under the lock: the passenger may have boarded or paid a moment ago
+      const booking = await tx.booking.findUnique({ where: { id }, include: { payment: true } })
+      if (!booking || booking.status === 'CANCELLED' || booking.status === 'COMPLETED' || booking.boardedAt) {
+        throw new SaleError(409, 'This booking can no longer be cancelled')
+      }
+
+      const now = new Date()
+      const refund = paidOnline(booking)
+        ? refundFor(booking.totalPrice, first.booking.schedule.departureTime, now, first.byAdmin)
+        : null
+
+      const done = await tx.booking.updateMany({
+        where: { id, status: { in: ['PENDING', 'CONFIRMED'] }, boardedAt: null },
+        data: {
+          status: 'CANCELLED',
+          cancelledAt: now,
+          refundPercent: refund?.percent ?? null,
+          refundAmount: refund?.refundAmount ?? null,
+        },
+      })
+      if (done.count === 0) throw new SaleError(409, 'This booking can no longer be cancelled')
+
+      const updated = await tx.booking.findUnique({
+        where: { id },
+        include: { schedule: { include: { route: true } } },
+      })
+      return { updated, refund }
+    })
+
+    res.json({
+      success: true,
+      message: result.refund
+        ? result.refund.refundAmount > 0
+          ? `Booking cancelled. ETB ${result.refund.refundAmount} (${result.refund.percent}%) will be refunded to you.`
+          : 'Booking cancelled. Under the Refund Policy no refund is due this close to departure.'
+        : 'Booking cancelled',
+      data: { booking: result.updated, refund: result.refund },
+    })
+  } catch (error) {
+    if (error instanceof SaleError) {
+      res.status(error.status).json({ success: false, error: error.message })
+      return
+    }
     console.error('CancelBooking error:', error)
     res.status(500).json({ success: false, error: 'Internal server error' })
   }

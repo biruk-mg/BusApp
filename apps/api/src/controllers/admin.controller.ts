@@ -385,6 +385,8 @@ async function buildAttention(): Promise<AttentionItem[]> {
       source: 'ONLINE',
       status: 'CANCELLED',
       payment: { is: { status: 'SUCCESS', refundedAt: null } },
+      // Cancelled with 0% back (Refund Policy) owes the passenger nothing
+      OR: [{ refundAmount: null }, { refundAmount: { gt: 0 } }],
       createdAt: { gte: new Date(now.getTime() - 60 * DAY) },
     },
     include: {
@@ -398,8 +400,14 @@ async function buildAttention(): Promise<AttentionItem[]> {
     items.push({
       kind: 'REFUND_NEEDED',
       severity: 'high',
-      title: `Refund needed: ETB ${b.totalPrice}`,
-      detail: `${b.user?.name ?? 'Passenger'} (${b.user?.phone ?? 'no phone'}) paid for ${b.schedule.route.fromCity} → ${b.schedule.route.toCity} with ${b.schedule.bus.operator.companyName}, but the seat was not confirmed.`,
+      title: `Refund needed: ETB ${b.refundAmount ?? b.totalPrice}`,
+      detail: `${b.user?.name ?? 'Passenger'} (${b.user?.phone ?? 'no phone'}) paid ETB ${b.totalPrice} for ${b.schedule.route.fromCity} → ${b.schedule.route.toCity} with ${b.schedule.bus.operator.companyName}. ${
+        b.refundPercent === null
+          ? 'The seat was not confirmed.'
+          : b.refundPercent === 100
+            ? 'The booking was cancelled: full refund.'
+            : `The passenger cancelled: ${b.refundPercent}% back under the Refund Policy.`
+      }`,
       operatorId: b.schedule.bus.operatorId,
       bookingId: b.id,
     })
