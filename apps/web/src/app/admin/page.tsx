@@ -56,8 +56,8 @@ export default function AdminDashboard() {
   if (loading) return <div style={{ color: '#999' }}>Loading dashboard...</div>
   if (!data) return null
 
-  const card = (label: string, value: string | number, sub: string, Icon: typeof Ticket, color: string, bg: string) => (
-    <div key={label} style={{ background: 'white', borderRadius: '16px', padding: '20px', border: '1px solid #F0F0F0' }}>
+  const card = (label: string, value: string | number, sub: string, Icon: typeof Ticket, color: string, bg: string, href: string) => (
+    <Link key={label} href={href} aria-label={`${label}: open the details`} className="mb-dash-card" style={{ display: 'block', textDecoration: 'none', background: 'white', borderRadius: '16px', padding: '20px', border: '1px solid #F0F0F0' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
         <p style={{ fontSize: '13px', color: '#999' }}>{label}</p>
         <div style={{ width: '34px', height: '34px', borderRadius: '10px', background: bg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -66,7 +66,8 @@ export default function AdminDashboard() {
       </div>
       <p style={{ fontSize: '24px', fontWeight: 700, color: '#1a1a1a' }}>{value}</p>
       <p style={{ fontSize: '12px', color: '#999', marginTop: '2px' }}>{sub}</p>
-    </div>
+      <p style={{ fontSize: '12px', color: '#C0392B', fontWeight: 600, marginTop: '10px' }}>See details →</p>
+    </Link>
   )
 
   const t = (x: Totals) => `${x.tickets} ticket${x.tickets === 1 ? '' : 's'}`
@@ -78,12 +79,13 @@ export default function AdminDashboard() {
         <p style={{ fontSize: '14px', color: '#999', marginTop: '4px' }}>Platform overview. Demo companies are not counted.</p>
       </div>
 
+      <style>{`.mb-dash-card { transition: box-shadow 0.15s, border-color 0.15s; } .mb-dash-card:hover, .mb-dash-card:focus-visible { box-shadow: 0 4px 16px rgba(0,0,0,0.08); border-color: #E0E0E0; }`}</style>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: '16px', marginBottom: '24px' }}>
-        {card('Companies', data.companies.active, `${data.companies.suspended} suspended · ${data.companies.demo} demo`, Building2, '#C0392B', '#FEF2F2')}
-        {card('Passengers', data.passengers, 'registered accounts', Users, '#4169E1', '#EEF2FF')}
-        {card('Online sales today', formatPrice(data.today.online.total), `${t(data.today.online)} · 30 days: ${formatPrice(data.last30.online.total)}`, Globe, '#2E8B57', '#F0FFF4')}
-        {card('Counter sales today', formatPrice(data.today.counter.total), `${t(data.today.counter)} · 30 days: ${formatPrice(data.last30.counter.total)}`, Banknote, '#D4A017', '#FFFBEB')}
-        {card('Trips, next 7 days', data.upcomingTrips, 'open for booking', CalendarClock, '#555', '#F5F5F5')}
+        {card('Companies', data.companies.active, `${data.companies.suspended} suspended · ${data.companies.demo} demo`, Building2, '#C0392B', '#FEF2F2', '/admin/companies')}
+        {card('Passengers', data.passengers, 'registered accounts', Users, '#4169E1', '#EEF2FF', '/admin/users')}
+        {card('Online sales today', formatPrice(data.today.online.total), `${t(data.today.online)} · 30 days: ${formatPrice(data.last30.online.total)}`, Globe, '#2E8B57', '#F0FFF4', '/admin/sales?period=today')}
+        {card('Counter sales today', formatPrice(data.today.counter.total), `${t(data.today.counter)} · 30 days: ${formatPrice(data.last30.counter.total)}`, Banknote, '#D4A017', '#FFFBEB', '/admin/sales?period=today')}
+        {card('Trips, next 7 days', data.upcomingTrips, 'open for booking', CalendarClock, '#555', '#F5F5F5', '/admin/schedules')}
       </div>
 
       <div style={box}>

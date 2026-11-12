@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { useAuthStore } from '@/store/auth.store'
 import Link from 'next/link'
-import { Menu, X, Bus, MapPin, Calendar, Ticket, Users, LayoutDashboard, LogOut, Building2, Wallet, Megaphone } from 'lucide-react'
+import { Menu, X, Bus, MapPin, Calendar, Ticket, Users, LayoutDashboard, LogOut, Building2, Wallet, Megaphone, BarChart3 } from 'lucide-react'
 
 const navItems = [
   { href: '/admin', label: 'Dashboard', icon: LayoutDashboard },
@@ -12,6 +12,7 @@ const navItems = [
   { href: '/admin/routes', label: 'Routes', icon: MapPin },
   { href: '/admin/schedules', label: 'Schedules', icon: Calendar },
   { href: '/admin/bookings', label: 'Bookings', icon: Ticket },
+  { href: '/admin/sales', label: 'Sales', icon: BarChart3 },
   { href: '/admin/payouts', label: 'Payouts', icon: Wallet },
   { href: '/admin/banners', label: 'Offers', icon: Megaphone },
   { href: '/admin/users', label: 'Users', icon: Users },
@@ -89,7 +90,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         <nav style={{ flex: 1, padding: '16px 12px' }}>
           {navItems.map((item) => {
             const Icon = item.icon
-            const isActive = pathname === item.href
+            const isActive = pathname === item.href || (item.href !== '/admin' && pathname.startsWith(item.href + '/'))
             return (
               <Link
                 key={item.href}

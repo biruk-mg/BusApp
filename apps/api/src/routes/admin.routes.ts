@@ -17,6 +17,7 @@ import {
   voidPayout,
   recordRefund,
 } from '../controllers/payout.controller'
+import { listSales, getCompanySales } from '../controllers/sales.controller'
 import express from 'express'
 import type { ErrorRequestHandler } from 'express'
 import { listBanners, createBanner, updateBanner, deleteBanner, setBannerImage, deleteBannerImage, MAX_IMAGE_BYTES } from '../controllers/banner.controller'
@@ -37,6 +38,10 @@ router.patch('/operators/:id', ...admin, updateOperator)
 router.post('/operators/:id/suspend', ...admin, suspendOperator)
 router.post('/operators/:id/reactivate', ...admin, reactivateOperator)
 router.post('/operators/:id/staff/:staffId/password', ...admin, resetCompanyStaffPassword)
+
+// Who sold how much (clickable numbers on the dashboard)
+router.get('/sales', ...admin, listSales)
+router.get('/sales/:operatorId', ...admin, getCompanySales)
 
 // Money: what each company is owed, payouts, and refunds of online payments
 router.get('/payouts', ...admin, listBalances)

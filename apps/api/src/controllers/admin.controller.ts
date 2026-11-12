@@ -6,6 +6,7 @@ import { prisma } from '../lib/prisma'
 import { AuthRequest } from '../middleware/auth'
 import { normalizePhone, phoneVariants } from '../lib/phone'
 import { addisDateString, addisDayRange } from '../lib/time'
+import { SALE_BOOKING, periodRange, soldCents, isTicket } from '../lib/salesReport'
 
 const DAY = 24 * 60 * 60 * 1000
 const PHONE = /^(\+2519|09)\d{8}$/
@@ -74,11 +75,12 @@ const blank = (): Totals => ({ tickets: 0, total: 0 })
 async function salesSince(since: Date, until?: Date) {
   const rows = await prisma.booking.findMany({
     where: {
-      status: { in: ['CONFIRMED', 'COMPLETED'] },
-      createdAt: { gte: since, ...(until ? { lt: until } : {}) },
+      AND: [SALE_BOOKING, { createdAt: { gte: since, ...(until ? { lt: until } : {}) } }],
     },
     select: {
       source: true,
+      status: true,
+      refundAmount: true,
       totalPrice: true,
       schedule: { select: { bus: { select: { operatorId: true, operator: { select: { isDemo: true } } } } } },
     },
@@ -89,13 +91,15 @@ async function salesSince(since: Date, until?: Date) {
     const id = r.schedule.bus.operatorId
     const entry = byOperator.get(id) ?? { online: blank(), counter: blank() }
     const side = r.source === 'COUNTER' ? 'counter' : 'online'
-    entry[side].tickets += 1
-    entry[side].total += r.totalPrice
+    // A cancelled ticket adds only the part the company kept (Refund Policy), and is not a ticket
+    const money = soldCents(r) / 100
+    if (isTicket(r)) entry[side].tickets += 1
+    entry[side].total += money
     byOperator.set(id, entry)
     // Demo companies are left out of the platform totals
     if (!r.schedule.bus.operator.isDemo) {
-      platform[side].tickets += 1
-      platform[side].total += r.totalPrice
+      if (isTicket(r)) platform[side].tickets += 1
+      platform[side].total += money
     }
   }
   return { byOperator, platform }
@@ -462,7 +466,7 @@ export const getDashboard = async (_req: AuthRequest, res: Response): Promise<vo
       prisma.operator.groupBy({ by: ['status', 'isDemo'], _count: { _all: true } }),
       prisma.user.count({ where: { role: 'CUSTOMER' } }),
       salesSince(today.start, today.end),
-      salesSince(new Date(now.getTime() - 30 * DAY)),
+      salesSince(periodRange('30d', now).from, today.end),
       buildAttention(),
       prisma.booking.findMany({
         where: { schedule: { bus: { operator: { isDemo: false } } } },
