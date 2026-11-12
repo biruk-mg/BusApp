@@ -6,9 +6,13 @@ import Link from 'next/link'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/store/auth.store'
 import toast from 'react-hot-toast'
+import { SITE } from '@/lib/site'
+import { useI18n } from '@/i18n/LanguageProvider'
+import LanguageSwitcher from '@/components/LanguageSwitcher'
 import { Bus, Phone, Lock, User, Mail } from 'lucide-react'
 
 export default function RegisterPage() {
+  const { t } = useI18n()
   const router = useRouter()
   const { setAuth } = useAuthStore()
   const [name, setName] = useState('')
@@ -24,11 +28,11 @@ export default function RegisterPage() {
       const res = await api.post('/auth/register', { name, phone, email, password })
       const { user, token } = res.data.data
       setAuth(user, token)
-      toast.success(`Welcome, ${user.name}!`)
+      toast.success(t('register.toast', { name: user.name }))
       router.push('/')
     } catch (err: unknown) {
       const error = err as { response?: { data?: { error?: string } } }
-      toast.error(error.response?.data?.error || 'Registration failed')
+      toast.error(error.response?.data?.error || t('register.failed'))
     } finally {
       setLoading(false)
     }
@@ -49,16 +53,16 @@ export default function RegisterPage() {
           </Link>
 
           <h2 style={{ fontSize: '32px', fontWeight: 700, color: 'white', lineHeight: 1.3, marginBottom: '16px' }}>
-            Join Thousands<br />of Ethiopian<br />
-            <span style={{ color: '#D4A017' }}>Travelers</span>
+            {t('register.side.a')}<br />{t('register.side.b')}<br />
+            <span style={{ color: '#D4A017' }}>{t('register.side.c', { name: SITE.name })}</span>
           </h2>
           <p style={{ fontSize: '14px', color: 'rgba(255,255,255,0.45)', lineHeight: 1.7 }}>
-            Create your account and start booking bus tickets across Ethiopia in seconds.
+            {t('register.side.text')}
           </p>
         </div>
 
         <div>
-          {['Free to register', 'No hidden fees', 'Cancel anytime'].map(f => (
+          {[t('register.f1'), t('register.f2'), t('register.f3')].map(f => (
             <div key={f} style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
               <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#D4A017', flexShrink: 0 }} />
               <span style={{ fontSize: '13px', color: 'rgba(255,255,255,0.45)' }}>{f}</span>
@@ -79,17 +83,17 @@ export default function RegisterPage() {
             </span>
           </Link>
           <h1 style={{ fontSize: '28px', fontWeight: 700, color: '#1a1a1a', marginBottom: '8px' }}>
-            Create account
+            {t('register.title')}
           </h1>
           <p style={{ fontSize: '14px', color: '#999', marginBottom: '36px' }}>
-            Join MugoBus and book tickets easily
+            {t('register.sub', { name: SITE.name })}
           </p>
 
           <form onSubmit={handleRegister} style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
             {/* Full Name */}
             <div>
               <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: '#444', marginBottom: '8px' }}>
-                Full Name
+                {t('register.name')}
               </label>
               <div style={{ position: 'relative' }}>
                 <User size={15} style={{ position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)', color: '#bbb' }} />
@@ -107,7 +111,7 @@ export default function RegisterPage() {
             {/* Phone */}
             <div>
               <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: '#444', marginBottom: '8px' }}>
-                Phone Number
+                {t('register.phone')}
               </label>
               <div style={{ position: 'relative' }}>
                 <Phone size={15} style={{ position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)', color: '#bbb' }} />
@@ -125,7 +129,7 @@ export default function RegisterPage() {
             {/* Email */}
             <div>
               <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: '#444', marginBottom: '8px' }}>
-                Email <span style={{ color: '#bbb', fontWeight: 400 }}>(optional)</span>
+                {t('register.email')} <span style={{ color: '#bbb', fontWeight: 400 }}>{t('register.optional')}</span>
               </label>
               <div style={{ position: 'relative' }}>
                 <Mail size={15} style={{ position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)', color: '#bbb' }} />
@@ -142,7 +146,7 @@ export default function RegisterPage() {
             {/* Password */}
             <div>
               <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: '#444', marginBottom: '8px' }}>
-                Password
+                {t('register.password')}
               </label>
               <div style={{ position: 'relative' }}>
                 <Lock size={15} style={{ position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)', color: '#bbb' }} />
@@ -162,16 +166,17 @@ export default function RegisterPage() {
               disabled={loading}
               style={{ background: loading ? '#999' : '#C0392B', color: 'white', border: 'none', borderRadius: '10px', padding: '14px', fontSize: '15px', fontWeight: 600, cursor: loading ? 'not-allowed' : 'pointer', marginTop: '4px' }}
             >
-              {loading ? 'Creating account...' : 'Create Account'}
+              {loading ? t('register.creating') : t('register.create')}
             </button>
           </form>
 
           <p style={{ textAlign: 'center', fontSize: '14px', color: '#999', marginTop: '28px' }}>
-            Already have an account?{' '}
+            {t('register.haveAccount')}{' '}
             <Link href="/login" style={{ color: '#C0392B', fontWeight: 600, textDecoration: 'none' }}>
-              Sign In
+              {t('register.signIn')}
             </Link>
           </p>
+          <div style={{ display: 'flex', justifyContent: 'center', marginTop: '20px' }}><LanguageSwitcher /></div>
         </div>
       </div>
     </div>

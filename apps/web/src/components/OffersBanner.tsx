@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { ArrowRight, ChevronLeft, ChevronRight } from 'lucide-react'
 import { assetUrl } from '@/lib/api'
+import { useI18n } from '@/i18n/LanguageProvider'
 
 export interface OfferBanner {
   id: string
@@ -91,6 +92,7 @@ const CSS = `
 
 // The home page offers space: nothing is drawn when there are no active offers.
 export default function OffersBanner({ banners }: { banners: OfferBanner[] }) {
+  const { t } = useI18n()
   const [index, setIndex] = useState(0)
   const [paused, setPaused] = useState(false)
   const touchX = useRef<number | null>(null)
@@ -142,8 +144,8 @@ export default function OffersBanner({ banners }: { banners: OfferBanner[] }) {
         </div>
         {count > 1 && (
           <>
-            <button type="button" className="mb-offer-arrow" style={{ left: '12px' }} aria-label="Previous offer" onClick={() => go(at - 1)}><ChevronLeft size={20} /></button>
-            <button type="button" className="mb-offer-arrow" style={{ right: '12px' }} aria-label="Next offer" onClick={() => go(at + 1)}><ChevronRight size={20} /></button>
+            <button type="button" className="mb-offer-arrow" style={{ left: '12px' }} aria-label={t('banner.prev')} onClick={() => go(at - 1)}><ChevronLeft size={20} /></button>
+            <button type="button" className="mb-offer-arrow" style={{ right: '12px' }} aria-label={t('banner.next')} onClick={() => go(at + 1)}><ChevronRight size={20} /></button>
           </>
         )}
       </div>
@@ -152,7 +154,7 @@ export default function OffersBanner({ banners }: { banners: OfferBanner[] }) {
           {banners.map((b, i) => (
             <button
               key={b.id}
-              aria-label={`Show offer ${i + 1} of ${count}`}
+              aria-label={t('banner.show', { i: i + 1, n: count })}
               onClick={() => setIndex(i)}
               style={{ width: i === at ? '22px' : '8px', height: '8px', borderRadius: '8px', border: 'none', padding: 0, cursor: 'pointer', background: i === at ? '#C0392B' : '#E0E0E0', transition: 'width 0.2s' }}
             />

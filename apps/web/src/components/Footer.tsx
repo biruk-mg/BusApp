@@ -1,28 +1,33 @@
+'use client'
+
 import Link from 'next/link'
 import { SITE } from '@/lib/site'
+import { useI18n } from '@/i18n/LanguageProvider'
+import LanguageSwitcher from '@/components/LanguageSwitcher'
+import type { MessageKey } from '@/i18n/translate'
 
-const COLUMNS = [
+const COLUMNS: { title: MessageKey; links: { href: string; label: MessageKey }[] }[] = [
   {
-    title: 'Travel',
+    title: 'footer.travel',
     links: [
-      { href: '/search', label: 'Find Buses' },
-      { href: '/routes', label: 'All Routes' },
-      { href: '/bookings', label: 'My Bookings' },
+      { href: '/search', label: 'footer.findBuses' },
+      { href: '/routes', label: 'footer.allRoutes' },
+      { href: '/bookings', label: 'footer.myBookings' },
     ],
   },
   {
-    title: 'Company',
+    title: 'footer.company',
     links: [
-      { href: '/about', label: 'About Us' },
-      { href: '/contact', label: 'Contact' },
+      { href: '/about', label: 'footer.about' },
+      { href: '/contact', label: 'footer.contact' },
     ],
   },
   {
-    title: 'Support',
+    title: 'footer.support',
     links: [
-      { href: '/help', label: 'Help Center' },
-      { href: '/faq', label: 'FAQ' },
-      { href: '/refund-policy', label: 'Refund Policy' },
+      { href: '/help', label: 'footer.help' },
+      { href: '/faq', label: 'footer.faq' },
+      { href: '/refund-policy', label: 'footer.refund' },
     ],
   },
 ]
@@ -30,6 +35,7 @@ const COLUMNS = [
 const linkStyle = { fontSize: '12px', color: 'rgba(255,255,255,0.45)', textDecoration: 'none' } as const
 
 export default function Footer() {
+  const { t } = useI18n()
   return (
     <footer style={{ background: '#0D0505', padding: 'clamp(32px, 5vw, 48px) clamp(20px, 6vw, 80px) 24px' }}>
       <style>{`
@@ -46,25 +52,26 @@ export default function Footer() {
               Mugo<span style={{ color: '#C0392B' }}>Bus</span>
             </div>
             <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.4)', lineHeight: 1.7, maxWidth: '240px' }}>
-              Book bus tickets across Ethiopia online. Choose your seat, pay securely and travel with your QR ticket.
+              {t('footer.tagline')}
             </p>
           </div>
           {COLUMNS.map((col) => (
             <div key={col.title}>
-              <div style={{ fontSize: '13px', fontWeight: 600, color: 'white', marginBottom: '16px' }}>{col.title}</div>
+              <div style={{ fontSize: '13px', fontWeight: 600, color: 'white', marginBottom: '16px' }}>{t(col.title)}</div>
               {col.links.map((l) => (
                 <div key={l.href + l.label} style={{ marginBottom: '10px' }}>
-                  <Link href={l.href} className="mb-footer-link" style={linkStyle}>{l.label}</Link>
+                  <Link href={l.href} className="mb-footer-link" style={linkStyle}>{t(l.label)}</Link>
                 </div>
               ))}
             </div>
           ))}
         </div>
         <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-          <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.3)' }}>© 2026 {SITE.name}. All rights reserved.</div>
-          <div style={{ display: 'flex', gap: '20px' }}>
-            <Link href="/privacy" className="mb-footer-link" style={{ ...linkStyle, color: 'rgba(255,255,255,0.35)' }}>Privacy Policy</Link>
-            <Link href="/terms" className="mb-footer-link" style={{ ...linkStyle, color: 'rgba(255,255,255,0.35)' }}>Terms of Service</Link>
+          <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.3)' }}>{t('footer.rights', { name: SITE.name })}</div>
+          <div style={{ display: 'flex', gap: '20px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <LanguageSwitcher dark />
+            <Link href="/privacy" className="mb-footer-link" style={{ ...linkStyle, color: 'rgba(255,255,255,0.35)' }}>{t('footer.privacy')}</Link>
+            <Link href="/terms" className="mb-footer-link" style={{ ...linkStyle, color: 'rgba(255,255,255,0.35)' }}>{t('footer.terms')}</Link>
           </div>
         </div>
       </div>

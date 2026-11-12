@@ -21,7 +21,7 @@ html {
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: var(--font-geist), var(--font-ethiopic), -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Nyala', sans-serif;
   background: #ffffff;
   color: #1a1a1a;
 }

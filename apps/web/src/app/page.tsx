@@ -7,6 +7,9 @@ import Navbar from '@/components/Navbar'
 import Footer from '@/components/Footer'
 import OffersBanner, { OfferBanner } from '@/components/OffersBanner'
 import { api } from '@/lib/api'
+import { SITE } from '@/lib/site'
+import { useI18n } from '@/i18n/LanguageProvider'
+import { addisDateKey } from '@/i18n/format'
 import { ArrowRight, Shield, Ticket, CheckCircle, Bus, MapPin } from 'lucide-react'
 
 interface RoutePair { fromCity: string; toCity: string }
@@ -26,7 +29,6 @@ interface HomeData {
   banners: OfferBanner[]
 }
 
-const TZ = 'Africa/Addis_Ababa'
 const CARD_COLORS = [
   'linear-gradient(135deg, #C0392B, #8E2318)',
   'linear-gradient(135deg, #2E8B57, #1E5C3A)',
@@ -34,34 +36,9 @@ const CARD_COLORS = [
   'linear-gradient(135deg, #34495E, #1F2D3A)',
 ]
 
-// All dates and times are shown as Addis Ababa time, whatever the phone's time zone
-const addisDate = (d: Date | string) => new Date(d).toLocaleDateString('en-CA', { timeZone: TZ })
-
-function formatDuration(min: number) {
-  const h = Math.floor(min / 60)
-  const m = min % 60
-  if (h === 0) return `${m}m`
-  return m === 0 ? `${h}h` : `${h}h ${m}m`
-}
-
-function formatNext(iso: string) {
-  const time = new Date(iso).toLocaleTimeString('en-US', { timeZone: TZ, hour: 'numeric', minute: '2-digit' })
-  const toDay = (s: string) => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10))
-  const diff = Math.round((toDay(addisDate(iso)) - toDay(addisDate(new Date()))) / 86400000)
-  if (diff <= 0) return `Today, ${time}`
-  if (diff === 1) return `Tomorrow, ${time}`
-  const day = new Date(iso).toLocaleDateString('en-GB', { timeZone: TZ, weekday: 'short', day: 'numeric', month: 'short' })
-  return `${day}, ${time}`
-}
-
-const STEPS = [
-  { n: '1', title: 'Search', text: 'Choose where you are going and the date, and see the trips available.' },
-  { n: '2', title: 'Choose your seat', text: 'Pick your seat on the bus map and the place where you will board.' },
-  { n: '3', title: 'Pay and travel', text: 'Pay online and get a ticket with a QR code to show when boarding.' },
-]
-
 export default function HomePage() {
   const router = useRouter()
+  const { t, tn, locale, city, price, duration, next, ethiopianDate } = useI18n()
   const [fromCity, setFromCity] = useState('')
   const [toCity, setToCity] = useState('')
   const [date, setDate] = useState('')
@@ -82,13 +59,16 @@ export default function HomePage() {
 
   useEffect(() => { setMounted(true); loadHome() }, [loadHome])
 
-  const today = addisDate(new Date())
+  const today = addisDateKey(new Date())
 
   // City lists come from the routes we really have: "From" lists the cities a
   // bus leaves from, and "To" lists only the cities reachable from that city.
+  // The values (and the search links) stay the English names; only the shown
+  // names are translated, and they are sorted the way the shown names read.
   const routes = home?.routes ?? []
-  const fromCities = Array.from(new Set(routes.map((r) => r.fromCity))).sort((a, b) => a.localeCompare(b))
-  const toCities = Array.from(new Set(routes.filter((r) => r.fromCity === fromCity).map((r) => r.toCity))).sort((a, b) => a.localeCompare(b))
+  const byShownName = (a: string, b: string) => city(a).localeCompare(city(b), locale === 'en' ? undefined : locale)
+  const fromCities = Array.from(new Set(routes.map((r) => r.fromCity))).sort(byShownName)
+  const toCities = Array.from(new Set(routes.filter((r) => r.fromCity === fromCity).map((r) => r.toCity))).sort(byShownName)
 
   const handleFromChange = (value: string) => {
     setFromCity(value)
@@ -105,11 +85,17 @@ export default function HomePage() {
 
   const stats = home
     ? [
-        { num: home.stats.routes, label: 'Routes' },
-        { num: home.stats.companies, label: 'Bus companies' },
-        { num: home.stats.upcomingTrips, label: 'Upcoming trips' },
+        { num: home.stats.routes, label: t('home.stat.routes') },
+        { num: home.stats.companies, label: t('home.stat.companies') },
+        { num: home.stats.upcomingTrips, label: t('home.stat.trips') },
       ].filter((s) => s.num > 0)
     : []
+
+  const steps = [
+    { n: '1', title: t('home.step1.title'), text: t('home.step1.text') },
+    { n: '2', title: t('home.step2.title'), text: t('home.step2.text') },
+    { n: '3', title: t('home.step3.title'), text: t('home.step3.text') },
+  ]
 
   const fieldStyle = { width: '100%', border: '1px solid #E0E0E0', borderRadius: '8px', padding: '10px 12px', fontSize: '13px', background: '#fff', boxSizing: 'border-box' } as const
   const labelStyle = { display: 'block', fontSize: '11px', color: '#999', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' } as const
@@ -269,17 +255,17 @@ export default function HomePage() {
           <div>
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', background: '#FEF9E7', border: '1px solid #F0D060', borderRadius: '20px', padding: '6px 14px', marginBottom: '20px' }}>
               <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#C0392B' }} />
-              <span style={{ fontSize: '12px', color: '#C0392B', fontWeight: 500 }}>Book bus tickets online across Ethiopia</span>
+              <span style={{ fontSize: '12px', color: '#C0392B', fontWeight: 500 }}>{t('home.badge')}</span>
             </div>
 
             <h1 className="hero-title" style={{ fontSize: '48px', fontWeight: 700, lineHeight: 1.15, color: '#1a1a1a', marginBottom: '16px' }}>
-              Travel Across<br />
-              Ethiopia with{' '}
-              <span style={{ color: '#C0392B' }}>Ease</span>
+              {t('home.title.line1')}<br />
+              {t('home.title.line2')}{' '}
+              <span style={{ color: '#C0392B' }}>{t('home.title.accent')}</span>
             </h1>
 
             <p style={{ fontSize: '16px', color: '#666', lineHeight: 1.7, marginBottom: '32px', maxWidth: '420px' }}>
-              Book your bus ticket online — secure payment, instant e-ticket and your choice of seat and pickup point.
+              {t('home.subtitle')}
             </p>
 
             {/* Search */}
@@ -287,42 +273,47 @@ export default function HomePage() {
               <div style={{ background: '#F8F8F8', border: '1px solid #E5E5E5', borderRadius: '16px', padding: '20px', marginBottom: '32px' }}>
                 <div className="search-grid">
                   <div>
-                    <label style={labelStyle}>From</label>
+                    <label style={labelStyle}>{t('home.from')}</label>
                     <select value={fromCity} onChange={(e) => handleFromChange(e.target.value)} required disabled={!home} style={fieldStyle}>
-                      <option value="">{!home ? (loadError ? 'Could not load cities' : 'Loading cities…') : 'Select city'}</option>
-                      {fromCities.map((c) => <option key={c} value={c}>{c}</option>)}
+                      <option value="">{!home ? (loadError ? t('home.cityLoadFailed') : t('home.loadingCities')) : t('home.selectCity')}</option>
+                      {fromCities.map((c) => <option key={c} value={c}>{city(c)}</option>)}
                     </select>
                   </div>
                   <div>
-                    <label style={labelStyle}>To</label>
+                    <label style={labelStyle}>{t('home.to')}</label>
                     <select value={toCity} onChange={(e) => setToCity(e.target.value)} required disabled={!fromCity} style={fieldStyle}>
-                      <option value="">{fromCity ? 'Select city' : 'Choose where from first'}</option>
-                      {toCities.map((c) => <option key={c} value={c}>{c}</option>)}
+                      <option value="">{fromCity ? t('home.selectCity') : t('home.chooseFromFirst')}</option>
+                      {toCities.map((c) => <option key={c} value={c}>{city(c)}</option>)}
                     </select>
                   </div>
                   <div>
-                    <label style={labelStyle}>Date</label>
+                    <label style={labelStyle}>{t('home.date')}</label>
                     <input type="date" value={date} min={today} onChange={(e) => setDate(e.target.value)} required style={fieldStyle} />
+                    {locale === 'am' && date && (
+                      <div style={{ fontSize: '11px', color: '#999', marginTop: '6px' }}>
+                        {t('home.dateHint', { date: ethiopianDate(`${date}T12:00:00+03:00`) })}
+                      </div>
+                    )}
                   </div>
                   <div>
-                    <label style={labelStyle}>Passengers</label>
+                    <label style={labelStyle}>{t('home.passengers')}</label>
                     <select value={passengers} onChange={(e) => setPassengers(Number(e.target.value))} style={fieldStyle}>
-                      {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n} Passenger{n > 1 ? 's' : ''}</option>)}
+                      {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{tn('home.passengerCount', n)}</option>)}
                     </select>
                   </div>
                 </div>
                 {loadError && (
                   <div style={{ fontSize: '12px', color: '#C0392B', marginBottom: '12px' }}>
-                    We could not load the cities.{' '}
-                    <button type="button" onClick={loadHome} style={{ background: 'none', border: 'none', color: '#C0392B', fontWeight: 600, textDecoration: 'underline', cursor: 'pointer', fontSize: '12px', padding: 0 }}>Try again</button>
+                    {t('home.cityLoadError')}{' '}
+                    <button type="button" onClick={loadHome} style={{ background: 'none', border: 'none', color: '#C0392B', fontWeight: 600, textDecoration: 'underline', cursor: 'pointer', fontSize: '12px', padding: 0 }}>{t('common.tryAgain')}</button>
                   </div>
                 )}
                 {home && routes.length === 0 && (
-                  <div style={{ fontSize: '12px', color: '#999', marginBottom: '12px' }}>No routes are available yet. Please check back soon.</div>
+                  <div style={{ fontSize: '12px', color: '#999', marginBottom: '12px' }}>{t('home.noRoutes')}</div>
                 )}
                 <button type="submit" disabled={!home || routes.length === 0}
                   style={{ width: '100%', background: '#C0392B', color: 'white', border: 'none', borderRadius: '8px', padding: '12px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', opacity: !home || routes.length === 0 ? 0.6 : 1 }}>
-                  Search Buses <ArrowRight size={16} />
+                  {t('home.search')} <ArrowRight size={16} />
                 </button>
               </div>
             </form>
@@ -343,24 +334,24 @@ export default function HomePage() {
           {/* Hero Images */}
           <div className="hero-images">
             <div style={{ gridRow: 'span 2', borderRadius: '16px', overflow: 'hidden', position: 'relative' }}>
-              <img src="https://images.unsplash.com/photo-1580746738099-b2d5b1b0c1a8?w=600&q=80" alt="Addis Ababa"
+              <img src="https://images.unsplash.com/photo-1580746738099-b2d5b1b0c1a8?w=600&q=80" alt={city('Addis Ababa')}
                 style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               <div style={{ position: 'absolute', bottom: '12px', left: '12px', background: 'rgba(0,0,0,0.6)', color: 'white', fontSize: '12px', fontWeight: 600, padding: '4px 10px', borderRadius: '20px' }}>
-                Addis Ababa
+                {city('Addis Ababa')}
               </div>
             </div>
             <div style={{ borderRadius: '16px', overflow: 'hidden', position: 'relative' }}>
-              <img src="https://images.unsplash.com/photo-1516026672322-bc52d61a55d5?w=400&q=80" alt="Hawassa"
+              <img src="https://images.unsplash.com/photo-1516026672322-bc52d61a55d5?w=400&q=80" alt={city('Hawassa')}
                 style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               <div style={{ position: 'absolute', bottom: '8px', left: '10px', background: 'rgba(0,0,0,0.6)', color: 'white', fontSize: '12px', fontWeight: 600, padding: '4px 10px', borderRadius: '20px' }}>
-                Hawassa
+                {city('Hawassa')}
               </div>
             </div>
             <div style={{ borderRadius: '16px', overflow: 'hidden', position: 'relative' }}>
-              <img src="https://images.unsplash.com/photo-1489749798305-4fea3ae63d43?w=400&q=80" alt="Bahir Dar"
+              <img src="https://images.unsplash.com/photo-1489749798305-4fea3ae63d43?w=400&q=80" alt={city('Bahir Dar')}
                 style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               <div style={{ position: 'absolute', bottom: '8px', left: '10px', background: 'rgba(0,0,0,0.6)', color: 'white', fontSize: '12px', fontWeight: 600, padding: '4px 10px', borderRadius: '20px' }}>
-                Bahir Dar
+                {city('Bahir Dar')}
               </div>
             </div>
           </div>
@@ -373,19 +364,19 @@ export default function HomePage() {
         <div className="section-padding">
           <div className="section-header">
             <div>
-              <div style={{ fontSize: '12px', color: '#C0392B', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>Explore</div>
-              <h2 style={{ fontSize: '32px', fontWeight: 700, color: '#1a1a1a' }}>Popular <span style={{ color: '#C0392B' }}>Routes</span></h2>
+              <div style={{ fontSize: '12px', color: '#C0392B', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>{t('home.explore')}</div>
+              <h2 style={{ fontSize: '32px', fontWeight: 700, color: '#1a1a1a' }}>{t('home.popular.a')} <span style={{ color: '#C0392B' }}>{t('home.popular.b')}</span></h2>
             </div>
             <Link href="/routes" style={{ fontSize: '13px', color: '#666', border: '1px solid #E0E0E0', padding: '8px 18px', borderRadius: '8px', textDecoration: 'none', whiteSpace: 'nowrap' }}>
-              View All Routes
+              {t('home.viewAll')}
             </Link>
           </div>
 
           {!home ? (
-            <div style={{ color: '#999', fontSize: '14px', padding: '24px 0' }}>{loadError ? 'We could not load the routes right now.' : 'Loading routes…'}</div>
+            <div style={{ color: '#999', fontSize: '14px', padding: '24px 0' }}>{loadError ? t('home.routesFailed') : t('home.loadingRoutes')}</div>
           ) : home.popular.length === 0 ? (
             <div style={{ border: '1px dashed #E0E0E0', borderRadius: '16px', padding: '36px 20px', textAlign: 'center', color: '#999', fontSize: '14px', lineHeight: 1.6 }}>
-              Trips will appear here as soon as bus companies add them. You can still use the search above.
+              {t('home.noPopular')}
             </div>
           ) : (
             <div className="routes-grid">
@@ -393,27 +384,27 @@ export default function HomePage() {
                 <Link
                   key={`${route.fromCity}-${route.toCity}`}
                   className="route-card"
-                  href={`/search?fromCity=${encodeURIComponent(route.fromCity)}&toCity=${encodeURIComponent(route.toCity)}&date=${addisDate(route.nextDeparture)}&passengers=1`}
+                  href={`/search?fromCity=${encodeURIComponent(route.fromCity)}&toCity=${encodeURIComponent(route.toCity)}&date=${addisDateKey(route.nextDeparture)}&passengers=1`}
                 >
                   <div style={{ height: '110px', background: CARD_COLORS[i % CARD_COLORS.length], position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 14px', textAlign: 'center' }}>
                     <div style={{ position: 'absolute', top: '10px', right: '10px', background: 'rgba(255,255,255,0.95)', fontSize: '11px', fontWeight: 600, padding: '4px 10px', borderRadius: '20px', color: '#1a1a1a' }}>
-                      {route.tripCount} trip{route.tripCount === 1 ? '' : 's'}
+                      {tn('home.trips', route.tripCount)}
                     </div>
-                    <div style={{ color: 'white', fontSize: '17px', fontWeight: 700, lineHeight: 1.3 }}>
-                      {route.fromCity}<br />
-                      <span style={{ fontSize: '13px', fontWeight: 500, opacity: 0.8 }}>to</span> {route.toCity}
+                    <div style={{ color: 'white', fontSize: '17px', fontWeight: 700, lineHeight: 1.4 }}>
+                      {city(route.fromCity)}<br />
+                      <ArrowRight size={14} style={{ verticalAlign: 'middle', opacity: 0.8 }} /> {city(route.toCity)}
                     </div>
                   </div>
                   <div style={{ padding: '14px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
                       <div style={{ fontSize: '15px', fontWeight: 700, color: '#C0392B' }}>
-                        <span style={{ fontSize: '11px', color: '#999', fontWeight: 400 }}>From </span>ETB {route.minPrice}
+                        <span style={{ fontSize: '11px', color: '#999', fontWeight: 400 }}>{t('home.fromPrice')} </span>{price(route.minPrice)}
                       </div>
-                      <div style={{ fontSize: '11px', color: '#999' }}>{formatDuration(route.durationMin)}</div>
+                      <div style={{ fontSize: '11px', color: '#999' }}>{duration(route.durationMin)}</div>
                     </div>
                     <div style={{ fontSize: '12px', color: '#777', lineHeight: 1.6 }}>
-                      {route.operatorCount} bus compan{route.operatorCount === 1 ? 'y' : 'ies'}<br />
-                      Next: {formatNext(route.nextDeparture)}
+                      {tn('home.companies', route.operatorCount)}<br />
+                      {t('home.next', { when: next(route.nextDeparture) })}
                     </div>
                   </div>
                 </Link>
@@ -426,15 +417,15 @@ export default function HomePage() {
         <div style={{ background: '#F8F8F8', padding: '64px 80px' }}>
           <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
             <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '12px', color: '#C0392B', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>Why choose us</div>
-              <h2 style={{ fontSize: '32px', fontWeight: 700, color: '#1a1a1a' }}>Travel with <span style={{ color: '#C0392B' }}>Confidence</span></h2>
+              <div style={{ fontSize: '12px', color: '#C0392B', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>{t('home.why.eyebrow')}</div>
+              <h2 style={{ fontSize: '32px', fontWeight: 700, color: '#1a1a1a' }}>{t('home.why.a')} <span style={{ color: '#C0392B' }}>{t('home.why.b')}</span></h2>
             </div>
             <div className="why-grid">
               {[
-                { icon: <CheckCircle size={22} />, title: 'Licensed Operators', desc: 'Every bus company on MugoBus is added by our team with its licence details' },
-                { icon: <Shield size={22} />, title: 'Secure Payments', desc: 'Pay online through Chapa. We never see or store your card or mobile-money PIN' },
-                { icon: <Bus size={22} />, title: 'Your Seat, Your Pickup', desc: 'See the seat map and choose your seat and where you will board' },
-                { icon: <Ticket size={22} />, title: 'Instant E-Ticket', desc: 'Get your QR code ticket instantly after booking — no printing needed' },
+                { icon: <CheckCircle size={22} />, title: t('home.why1.title'), desc: t('home.why1.desc', { name: SITE.name }) },
+                { icon: <Shield size={22} />, title: t('home.why2.title'), desc: t('home.why2.desc') },
+                { icon: <Bus size={22} />, title: t('home.why3.title'), desc: t('home.why3.desc') },
+                { icon: <Ticket size={22} />, title: t('home.why4.title'), desc: t('home.why4.desc') },
               ].map((item) => (
                 <div key={item.title} style={{ background: '#fff', border: '1px solid #E5E5E5', borderRadius: '16px', padding: '28px 20px', textAlign: 'center' }}>
                   <div style={{ width: '48px', height: '48px', borderRadius: '12px', background: '#FEF2F2', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', color: '#C0392B' }}>
@@ -451,11 +442,11 @@ export default function HomePage() {
         {/* How it works */}
         <div className="section-padding">
           <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: '12px', color: '#C0392B', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>Simple</div>
-            <h2 style={{ fontSize: '32px', fontWeight: 700, color: '#1a1a1a' }}>How it <span style={{ color: '#C0392B' }}>works</span></h2>
+            <div style={{ fontSize: '12px', color: '#C0392B', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>{t('home.how.eyebrow')}</div>
+            <h2 style={{ fontSize: '32px', fontWeight: 700, color: '#1a1a1a' }}>{t('home.how.a')} <span style={{ color: '#C0392B' }}>{t('home.how.b')}</span></h2>
           </div>
           <div className="how-grid">
-            {STEPS.map((s) => (
+            {steps.map((s) => (
               <div key={s.n} style={{ background: '#fff', border: '1px solid #E5E5E5', borderRadius: '16px', padding: '24px' }}>
                 <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: '#C0392B', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '14px', marginBottom: '12px' }}>
                   {s.n}
@@ -466,33 +457,33 @@ export default function HomePage() {
             ))}
           </div>
           <div style={{ textAlign: 'center', marginTop: '24px', fontSize: '13px' }}>
-            <Link href="/help" style={{ color: '#C0392B', fontWeight: 600, textDecoration: 'none' }}>Need help? Visit the Help Center →</Link>
+            <Link href="/help" style={{ color: '#C0392B', fontWeight: 600, textDecoration: 'none' }}>{t('home.helpLink')}</Link>
           </div>
         </div>
 
         {/* CTA */}
         <section style={{ background: '#1A0A0A', padding: 'clamp(48px, 8vw, 80px) clamp(20px, 6vw, 80px)', textAlign: 'center' }}>
           <h2 className="cta-title" style={{ fontSize: '40px', fontWeight: 700, color: 'white', marginBottom: '16px', lineHeight: 1.3 }}>
-            Ready for Your Next<br />
-            <span style={{ color: '#D4A017' }}>Ethiopian Journey?</span>
+            {t('home.cta.a')}<br />
+            <span style={{ color: '#D4A017' }}>{t('home.cta.b')}</span>
           </h2>
           <p style={{ fontSize: '16px', color: 'rgba(255,255,255,0.5)', marginBottom: '36px' }}>
-            Start booking today. Travel comfortably across Ethiopia.
+            {t('home.cta.sub')}
           </p>
           <div className="cta-buttons">
             <button onClick={() => router.push('/search')}
               style={{ background: '#C0392B', color: 'white', border: 'none', padding: '14px 32px', borderRadius: '10px', fontSize: '15px', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              Book a Trip <ArrowRight size={16} />
+              {t('nav.bookATrip')} <ArrowRight size={16} />
             </button>
             <Link href="/routes" style={{ background: 'transparent', color: 'white', border: '1px solid rgba(255,255,255,0.3)', padding: '14px 32px', borderRadius: '10px', fontSize: '15px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
-              <MapPin size={16} /> View All Routes
+              <MapPin size={16} /> {t('home.viewAll')}
             </Link>
           </div>
           <div className="cta-trust">
-            {['Secure online payment', 'Instant e-ticket', 'Choose your seat'].map((t) => (
-              <div key={t} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: 'rgba(255,255,255,0.4)' }}>
+            {[t('home.trust1'), t('home.trust2'), t('home.trust3')].map((label) => (
+              <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: 'rgba(255,255,255,0.4)' }}>
                 <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#D4A017' }} />
-                {t}
+                {label}
               </div>
             ))}
           </div>

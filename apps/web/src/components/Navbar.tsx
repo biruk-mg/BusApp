@@ -6,10 +6,13 @@ import { homeFor } from '@/lib/staffHome'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Bus, Ticket, LogOut, User, Menu, X } from 'lucide-react'
+import { useI18n } from '@/i18n/LanguageProvider'
+import LanguageSwitcher from '@/components/LanguageSwitcher'
 
 export default function Navbar() {
   const { user, isAuthenticated, logout, loadFromStorage } = useAuthStore()
   const router = useRouter()
+  const { t } = useI18n()
   const [menuOpen, setMenuOpen] = useState(false)
 
   useEffect(() => {
@@ -38,24 +41,25 @@ export default function Navbar() {
         </Link>
 {/* Desktop Nav */}
         <div className="nav-links" style={{ display: 'flex', alignItems: 'center', gap: '32px' }}>
-          <Link href="/search" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>Find Buses</Link>
-          <Link href="/routes" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>Routes</Link>
-          <Link href="/about" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>About</Link>
+          <Link href="/search" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>{t('nav.findBuses')}</Link>
+          <Link href="/routes" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>{t('nav.routes')}</Link>
+          <Link href="/about" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>{t('nav.about')}</Link>
         </div>
 
         {/* Auth (desktop only, phones use the menu) */}
         <div className="nav-auth" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <LanguageSwitcher />
           {isAuthenticated ? (
             <>
               <Link href="/bookings" style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', color: '#666', textDecoration: 'none' }}>
-                <Ticket size={16} /> <span>My Bookings</span>
+                <Ticket size={16} /> <span>{t('nav.myBookings')}</span>
               </Link>
               {user?.role === 'ADMIN' && (
-                <Link href="/admin" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>Dashboard</Link>
+                <Link href="/admin" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>{t('nav.dashboard')}</Link>
               )}
               {user?.role === 'OPERATOR' && user.staff && (
                 <Link href={homeFor(user)} style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>
-                  {user.staff.role === 'SELLER' ? 'Counter Sales' : user.staff.role === 'CHECKER' ? 'Check-in' : 'Operator Portal'}
+                  {user.staff.role === 'SELLER' ? t('nav.counterSales') : user.staff.role === 'CHECKER' ? t('nav.checkIn') : t('nav.operatorPortal')}
                 </Link>
               )}
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', color: '#1a1a1a' }}>
@@ -76,12 +80,12 @@ export default function Navbar() {
             </>
           ) : (
             <>
-              <Link href="/login" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>Sign In</Link>
+              <Link href="/login" style={{ fontSize: '14px', color: '#666', textDecoration: 'none' }}>{t('nav.signIn')}</Link>
               <Link
                 href="/search"
                 style={{ background: '#C0392B', color: 'white', fontSize: '13px', fontWeight: 600, padding: '10px 18px', borderRadius: '8px', textDecoration: 'none', whiteSpace: 'nowrap' }}
               >
-                Book a Trip
+                {t('nav.bookATrip')}
               </Link>
             </>
           )}
@@ -90,7 +94,7 @@ export default function Navbar() {
         {/* Menu button (phones and tablets only) */}
         <button
           className="nav-burger"
-          aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+          aria-label={menuOpen ? t('nav.closeMenu') : t('nav.openMenu')}
           onClick={() => setMenuOpen(!menuOpen)}
           style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '8px', display: 'flex', alignItems: 'center', color: '#666' }}
         >
@@ -101,50 +105,51 @@ export default function Navbar() {
       {/* Mobile Menu */}
       {menuOpen && (
         <div className="nav-mobile" style={{ background: 'white', borderTop: '1px solid #F0F0F0', padding: '16px clamp(16px, 4vw, 80px)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <div style={{ padding: '4px 0 10px', borderBottom: '1px solid #F5F5F5' }}><LanguageSwitcher /></div>
           <Link href="/search" onClick={() => setMenuOpen(false)}
             style={{ padding: '12px 0', fontSize: '15px', color: '#333', textDecoration: 'none', borderBottom: '1px solid #F5F5F5', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            🚌 Find Buses
+            🚌 {t('nav.findBuses')}
           </Link>
           <Link href="/routes" onClick={() => setMenuOpen(false)}
             style={{ padding: '12px 0', fontSize: '15px', color: '#333', textDecoration: 'none', borderBottom: '1px solid #F5F5F5', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            🗺️ Routes
+            🗺️ {t('nav.routes')}
           </Link>
           <Link href="/about" onClick={() => setMenuOpen(false)}
             style={{ padding: '12px 0', fontSize: '15px', color: '#333', textDecoration: 'none', borderBottom: '1px solid #F5F5F5', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            ℹ️ About
+            ℹ️ {t('nav.about')}
           </Link>
           {isAuthenticated ? (
             <>
               <Link href="/bookings" onClick={() => setMenuOpen(false)}
                 style={{ padding: '12px 0', fontSize: '15px', color: '#333', textDecoration: 'none', borderBottom: '1px solid #F5F5F5', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                🎫 My Bookings
+                🎫 {t('nav.myBookings')}
               </Link>
               {user?.role === 'ADMIN' && (
                 <Link href="/admin" onClick={() => setMenuOpen(false)}
                   style={{ padding: '12px 0', fontSize: '15px', color: '#333', textDecoration: 'none', borderBottom: '1px solid #F5F5F5' }}>
-                  ⚙️ Admin Dashboard
+                  ⚙️ {t('nav.adminDashboard')}
                 </Link>
               )}
               {user?.role === 'OPERATOR' && user.staff && (
                 <Link href={homeFor(user)} onClick={() => setMenuOpen(false)}
                   style={{ padding: '12px 0', fontSize: '15px', color: '#333', textDecoration: 'none', borderBottom: '1px solid #F5F5F5' }}>
-                  🚌 {user.staff.role === 'SELLER' ? 'Counter Sales' : user.staff.role === 'CHECKER' ? 'Ticket Check-in' : 'Operator Portal'}
+                  🚌 {user.staff.role === 'SELLER' ? t('nav.counterSales') : user.staff.role === 'CHECKER' ? t('nav.ticketCheckIn') : t('nav.operatorPortal')}
                 </Link>
               )}
               <button onClick={handleLogout}
                 style={{ padding: '12px 0', fontSize: '15px', color: '#C0392B', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <LogOut size={16} /> Logout
+                <LogOut size={16} /> {t('nav.logout')}
               </button>
             </>
           ) : (
             <>
               <Link href="/login" onClick={() => setMenuOpen(false)}
                 style={{ padding: '12px 0', fontSize: '15px', color: '#333', textDecoration: 'none', borderBottom: '1px solid #F5F5F5' }}>
-                Sign In
+                {t('nav.signIn')}
               </Link>
               <Link href="/register" onClick={() => setMenuOpen(false)}
                 style={{ marginTop: '8px', background: '#C0392B', color: 'white', padding: '12px 16px', borderRadius: '8px', fontSize: '15px', fontWeight: 600, textDecoration: 'none', textAlign: 'center', display: 'block' }}>
-                Create Account
+                {t('nav.createAccount')}
               </Link>
             </>
           )}

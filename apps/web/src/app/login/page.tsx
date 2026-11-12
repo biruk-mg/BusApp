@@ -8,9 +8,13 @@ import { useAuthStore } from '@/store/auth.store'
 import { homeFor } from '@/lib/staffHome'
 import toast from 'react-hot-toast'
 import { Bus, Phone, Lock } from 'lucide-react'
+import { SITE } from '@/lib/site'
+import { useI18n } from '@/i18n/LanguageProvider'
+import LanguageSwitcher from '@/components/LanguageSwitcher'
 
 export default function LoginPage() {
   const router = useRouter()
+  const { t } = useI18n()
   const { setAuth } = useAuthStore()
   const [phone, setPhone] = useState('')
   const [password, setPassword] = useState('')
@@ -23,11 +27,11 @@ export default function LoginPage() {
       const res = await api.post('/auth/login', { phone, password })
       const { user, token } = res.data.data
       setAuth(user, token)
-      toast.success(`Welcome back, ${user.name}!`)
+      toast.success(t('login.toast', { name: user.name }))
       router.push(homeFor(user))
     } catch (err: unknown) {
       const error = err as { response?: { data?: { error?: string } } }
-      toast.error(error.response?.data?.error || 'Login failed')
+      toast.error(error.response?.data?.error || t('login.failed'))
     } finally {
       setLoading(false)
     }
@@ -48,16 +52,16 @@ export default function LoginPage() {
           </Link>
 
           <h2 style={{ fontSize: '32px', fontWeight: 700, color: 'white', lineHeight: 1.3, marginBottom: '16px' }}>
-            Ethiopia's #1<br />Bus Booking<br />
-            <span style={{ color: '#D4A017' }}>Platform</span>
+            {t('login.side.a')}<br />{t('login.side.b')}<br />
+            <span style={{ color: '#D4A017' }}>{t('login.side.c')}</span>
           </h2>
           <p style={{ fontSize: '14px', color: 'rgba(255,255,255,0.45)', lineHeight: 1.7 }}>
-            Book tickets to Adama, Hawassa, Bahir Dar, Jimma and more — all from your phone.
+            {t('login.side.text')}
           </p>
         </div>
 
         <div>
-          {['Secure payments', 'Instant e-tickets', '24/7 support'].map(f => (
+          {[t('login.f1'), t('login.f2'), t('login.f3')].map(f => (
             <div key={f} style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
               <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#D4A017', flexShrink: 0 }} />
               <span style={{ fontSize: '13px', color: 'rgba(255,255,255,0.45)' }}>{f}</span>
@@ -78,16 +82,16 @@ export default function LoginPage() {
             </span>
           </Link>
           <h1 style={{ fontSize: '28px', fontWeight: 700, color: '#1a1a1a', marginBottom: '8px' }}>
-            Welcome back
+            {t('login.welcome')}
           </h1>
           <p style={{ fontSize: '14px', color: '#999', marginBottom: '36px' }}>
-            Sign in to your MugoBus account
+            {t('login.sub', { name: SITE.name })}
           </p>
 
           <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
             <div>
               <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: '#444', marginBottom: '8px' }}>
-                Phone Number
+                {t('login.phone')}
               </label>
               <div style={{ position: 'relative' }}>
                 <Phone size={15} style={{ position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)', color: '#bbb' }} />
@@ -104,7 +108,7 @@ export default function LoginPage() {
 
             <div>
               <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, color: '#444', marginBottom: '8px' }}>
-                Password
+                {t('login.password')}
               </label>
               <div style={{ position: 'relative' }}>
                 <Lock size={15} style={{ position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)', color: '#bbb' }} />
@@ -124,16 +128,17 @@ export default function LoginPage() {
               disabled={loading}
               style={{ background: loading ? '#999' : '#C0392B', color: 'white', border: 'none', borderRadius: '10px', padding: '14px', fontSize: '15px', fontWeight: 600, cursor: loading ? 'not-allowed' : 'pointer', marginTop: '4px' }}
             >
-              {loading ? 'Signing in...' : 'Sign In'}
+              {loading ? t('login.signingIn') : t('login.signIn')}
             </button>
           </form>
 
           <p style={{ textAlign: 'center', fontSize: '14px', color: '#999', marginTop: '28px' }}>
-            Don&apos;t have an account?{' '}
+            {t('login.noAccount')}{' '}
             <Link href="/register" style={{ color: '#C0392B', fontWeight: 600, textDecoration: 'none' }}>
-              Sign Up
+              {t('login.signUp')}
             </Link>
           </p>
+          <div style={{ display: 'flex', justifyContent: 'center', marginTop: '20px' }}><LanguageSwitcher /></div>
         </div>
       </div>
     </div>
