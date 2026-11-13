@@ -19,6 +19,7 @@ import adminRoutes from './routes/admin.routes'
 import publicRoutes from './routes/public.routes'
 import { maybeTopUp } from './lib/recurring'
 import { assertEnv } from './lib/env'
+import { corsGuard, parseOrigins } from './lib/cors'
 
 // Load environment variables
 dotenv.config({ path: '../../.env' })
@@ -42,22 +43,15 @@ const PORT = process.env.PORT || 4000
 // ─── Middleware ──────────────────────────────────────────
 
 /**
- * CORS Configuration:
- * Allowed origins come from the FRONTEND_URL env variable
- * (comma-separated, e.g. "https://mugobus.vercel.app,https://mugobus.com").
- * Requests with no Origin header (mobile app, curl, server-to-server) are allowed.
+ * CORS: only the website addresses in the FRONTEND_URL setting (plus local development)
+ * may call the API. The guard turns others away with a clear message (see lib/cors.ts).
  */
-const allowedOrigins = (process.env.FRONTEND_URL || '')
-  .split(',')
-  .map((o) => o.trim().replace(/\/$/, ''))
-  .filter(Boolean)
-allowedOrigins.push('http://localhost:3000') // Local Next.js dev server
+const allowedOrigins = parseOrigins(process.env.FRONTEND_URL, ['http://localhost:3000'])
+console.log(`🔐 CORS allows: ${allowedOrigins.join(', ')}`)
 
+app.use(corsGuard(allowedOrigins))
 app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) return callback(null, true)
-    return callback(new Error(`CORS: origin not allowed: ${origin}`))
-  },
+  origin: allowedOrigins,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
 }))

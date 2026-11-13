@@ -2,7 +2,7 @@ import { Request, Response } from 'express'
 import { z } from 'zod'
 import QRCode from 'qrcode'
 import { prisma } from '../lib/prisma'
-import { AuthRequest } from '../middleware/auth'
+import { AuthRequest, effectiveRole } from '../middleware/auth'
 import { HOLD_MINUTES, releaseExpiredHolds } from '../lib/seats'
 import { PUBLIC_OPERATOR_FIELDS } from '../lib/visibility'
 import { SaleError, validateTripForSale, lockAndCheckSeats, checkUserHoldLimit } from '../lib/sales'
@@ -149,7 +149,7 @@ export const getBooking = async (req: AuthRequest, res: Response): Promise<void>
     }
 
     // Only owner or admin can view
-    if (booking.userId !== userId && req.userRole !== 'ADMIN') {
+    if (booking.userId !== userId && (await effectiveRole(req)) !== 'ADMIN') {
       res.status(403).json({ success: false, error: 'Access denied' })
       return
     }
@@ -174,7 +174,8 @@ async function loadCancellable(req: AuthRequest) {
   if (!booking) throw new SaleError(404, 'Booking not found')
 
   // Only owner or admin can cancel
-  if (booking.userId !== req.userId && req.userRole !== 'ADMIN') throw new SaleError(403, 'Access denied')
+  const isAdmin = (await effectiveRole(req)) === 'ADMIN'
+  if (booking.userId !== req.userId && !isAdmin) throw new SaleError(403, 'Access denied')
 
   // Counter tickets were paid at the counter: only staff can void them
   if (booking.source === 'COUNTER') {
@@ -184,7 +185,7 @@ async function loadCancellable(req: AuthRequest) {
   if (booking.status === 'COMPLETED') throw new SaleError(400, 'Cannot cancel a completed booking')
   if (booking.boardedAt) throw new SaleError(400, 'This passenger has already boarded, so the ticket cannot be cancelled')
 
-  const byAdmin = req.userRole === 'ADMIN'
+  const byAdmin = isAdmin
   if (!byAdmin && booking.schedule.departureTime.getTime() <= Date.now()) {
     throw new SaleError(400, 'This trip has already departed, so the ticket can no longer be cancelled')
   }

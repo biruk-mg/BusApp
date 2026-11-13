@@ -1,7 +1,7 @@
 import { Request, Response } from 'express'
 import axios from 'axios'
 import { prisma } from '../lib/prisma'
-import { AuthRequest } from '../middleware/auth'
+import { AuthRequest, effectiveRole } from '../middleware/auth'
 import { PAYMENT_WINDOW_MINUTES, activeBookingFilter, releaseExpiredHolds } from '../lib/seats'
 
 const CHAPA_BASE_URL = 'https://api.chapa.co/v1'
@@ -259,7 +259,7 @@ export const verifyBookingPayment = async (req: AuthRequest, res: Response): Pro
       res.status(404).json({ success: false, error: 'Booking not found' })
       return
     }
-    if (booking.userId !== req.userId && req.userRole !== 'ADMIN') {
+    if (booking.userId !== req.userId && (await effectiveRole(req)) !== 'ADMIN') {
       res.status(403).json({ success: false, error: 'Access denied' })
       return
     }

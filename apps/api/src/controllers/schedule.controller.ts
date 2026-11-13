@@ -113,7 +113,7 @@ export const getAllSchedules = async (req: Request, res: Response): Promise<void
     const includePast = req.query.includePast === 'true'
     const includeClosed = req.query.includeClosed === 'true'
     // Only an admin can see suspended and demo companies' trips
-    const showHidden = req.query.includeHidden === 'true' && isAdminRequest(req)
+    const showHidden = req.query.includeHidden === 'true' && (await isAdminRequest(req))
     const schedules = await prisma.schedule.findMany({
       where: {
         ...(includePast ? {} : { departureTime: { gte: new Date() } }),
