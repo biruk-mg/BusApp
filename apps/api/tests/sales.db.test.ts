@@ -61,9 +61,15 @@ async function makeCompany(label: string, over: Record<string, unknown> = {}) {
   }
   const seller = async (name: string) => {
     const u = await makeUser(name, 'OPERATOR')
-    return prisma.operatorStaff.create({ data: { userId: u.user.id, operatorId: operator.id, role: 'SELLER' } })
+    const staff = await prisma.operatorStaff.create({ data: { userId: u.user.id, operatorId: operator.id, role: 'SELLER' } })
+    return Object.assign(staff, { tok: u.tok })
   }
-  return { operator, manager, bus, trip, seller }
+  const checker = async () => {
+    const u = await makeUser('checker', 'OPERATOR')
+    await prisma.operatorStaff.create({ data: { userId: u.user.id, operatorId: operator.id, role: 'CHECKER' } })
+    return u
+  }
+  return { operator, manager, bus, trip, seller, checker }
 }
 
 interface Sale {
@@ -109,6 +115,7 @@ describe.skipIf(!TEST_URL)('admin sales by company (database, real routes)', () 
     const app = express()
     app.use(express.json())
     app.use('/api/v1/admin', (await import('../src/routes/admin.routes')).default)
+    app.use('/api/v1/operator', (await import('../src/routes/operator.routes')).default)
     server = http.createServer(app)
     await new Promise<void>((r) => server.listen(0, r))
     baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
@@ -286,5 +293,36 @@ describe.skipIf(!TEST_URL)('admin sales by company (database, real routes)', () 
     const a = list.find((o: any) => o.id === A.operator.id)
     expect(a.online30).toEqual({ tickets: 3, total: 400 })
     expect(a.counter30).toEqual({ tickets: 2, total: 200 })
+  })
+  it('lets a manager see only their own company\'s sales, the same numbers the admin sees for it', async () => {
+    const mine = await api('/api/v1/operator/sales?period=7d', A.manager.tok)
+    expect(mine.status, JSON.stringify(mine.body)).toBe(200)
+    const asAdmin = (await api(`/api/v1/admin/sales/${A.operator.id}?period=7d`, admin.tok)).body.data
+    expect(mine.body.data).toEqual(asAdmin)
+    expect(mine.body.data.company.id).toBe(A.operator.id)
+    expect(mine.body.data.totals).toMatchObject({ online: { tickets: 3, total: 400 }, counter: { tickets: 2, total: 200 } })
+
+    // Company B's manager gets company B's numbers, never A's
+    const theirs = (await api('/api/v1/operator/sales?period=7d', B.manager.tok)).body.data
+    expect(theirs.company.id).toBe(B.operator.id)
+    expect(theirs.totals.online.total).toBe(300)
+    expect(JSON.stringify(theirs)).not.toContain(A.operator.id)
+    expect(JSON.stringify(theirs)).not.toContain(`${tag}-C`) // A's second route
+
+    // Asking for another company by id changes nothing: the company comes from who is logged in
+    const sneaky = (await api(`/api/v1/operator/sales?period=7d&operatorId=${A.operator.id}`, B.manager.tok)).body.data
+    expect(sneaky.company.id).toBe(B.operator.id)
+  })
+
+  it('does not let sellers, checkers, customers or strangers open the company sales', async () => {
+    const seller = await A.seller('Another Seller')
+    const checker = await A.checker()
+    expect((await api('/api/v1/operator/sales')).status).toBe(401)
+    expect((await api('/api/v1/operator/sales', seller.tok)).status).toBe(403)
+    expect((await api('/api/v1/operator/sales', checker.tok)).status).toBe(403)
+    expect((await api('/api/v1/operator/sales', customer.tok)).status).toBe(403)
+    expect((await api('/api/v1/operator/sales?period=year', A.manager.tok)).status).toBe(400)
+    // The platform admin has no company of their own here: they use the admin screens
+    expect((await api('/api/v1/operator/sales', admin.tok)).status).toBe(404)
   })
 })

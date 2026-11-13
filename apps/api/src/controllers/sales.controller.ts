@@ -2,6 +2,7 @@ import { Response } from 'express'
 import { prisma } from '../lib/prisma'
 import { AuthRequest } from '../middleware/auth'
 import { addisDateString } from '../lib/time'
+import { companyOf } from '../middleware/staff'
 import { toBirr } from '../lib/money'
 import { MoneyCents, Period, SALE_BOOKING, isPeriod, periodRange, saleCommissionCents } from '../lib/salesReport'
 
@@ -90,89 +91,112 @@ export const listSales = async (req: AuthRequest, res: Response): Promise<void> 
   }
 }
 
+/** One company's sales for a period, after refunds. Null when the company does not exist. */
+export async function companySales(operatorId: string, period: Period) {
+  const range = periodRange(period)
+
+  const operator = await prisma.operator.findUnique({
+    where: { id: operatorId },
+    select: { id: true, companyName: true, status: true, isDemo: true, commissionPercent: true },
+  })
+  if (!operator) return null
+
+  const rows = await prisma.booking.findMany({
+    where: { AND: [SALE_BOOKING, { createdAt: { gte: range.from, lt: range.to } }, { schedule: { bus: { operatorId: operator.id } } }] },
+    select: {
+      source: true, status: true, totalPrice: true, refundAmount: true, commissionPercent: true, createdAt: true,
+      schedule: { select: { route: { select: { fromCity: true, toCity: true } } } },
+      soldByStaff: { select: { user: { select: { name: true } } } },
+      payment: { select: { method: true } },
+    },
+  })
+
+  type Pair = { online: MoneyCents; counter: MoneyCents }
+  const pair = (): Pair => ({ online: new MoneyCents(), counter: new MoneyCents() })
+  const online = new MoneyCents()
+  const counter = new MoneyCents()
+  let commission = 0
+  const byRoute = new Map<string, Pair & { fromCity: string; toCity: string }>()
+  const byDay = new Map<string, Pair>(range.days.map((d) => [d, pair()]))
+  const bySeller = new Map<string, { name: string; total: MoneyCents }>()
+  const counterByMethod = new Map<string, MoneyCents>()
+
+  for (const r of rows) {
+    const side = r.source === 'COUNTER' ? 'counter' : 'online'
+    ;(side === 'counter' ? counter : online).add(r)
+    if (side === 'online') commission += saleCommissionCents(r, r.commissionPercent, operator.commissionPercent)
+
+    const { fromCity, toCity } = r.schedule.route
+    const key = `${fromCity}→${toCity}`
+    const route = byRoute.get(key) ?? { ...pair(), fromCity, toCity }
+    route[side].add(r)
+    byRoute.set(key, route)
+
+    byDay.get(addisDateString(r.createdAt))?.[side].add(r)
+
+    if (side === 'counter') {
+      const name = r.soldByStaff?.user.name ?? 'Unknown'
+      const seller = bySeller.get(name) ?? { name, total: new MoneyCents() }
+      seller.total.add(r)
+      bySeller.set(name, seller)
+      const method = r.payment?.method ?? 'UNKNOWN'
+      const m = counterByMethod.get(method) ?? new MoneyCents()
+      m.add(r)
+      counterByMethod.set(method, m)
+    }
+  }
+
+  const sum = (p: Pair) => p.online.cents + p.counter.cents
+  return {
+      period,
+      from: range.days[0],
+      to: range.days[range.days.length - 1],
+      company: { id: operator.id, companyName: operator.companyName, status: operator.status, isDemo: operator.isDemo, commissionPercent: operator.commissionPercent },
+      totals: { online: online.out(), counter: counter.out(), total: toBirr(online.cents + counter.cents), commission: toBirr(commission) },
+      byRoute: [...byRoute.values()]
+        .sort((a, b) => sum(b) - sum(a) || a.fromCity.localeCompare(b.fromCity))
+        .map((r) => ({ fromCity: r.fromCity, toCity: r.toCity, online: r.online.out(), counter: r.counter.out(), total: toBirr(sum(r)) })),
+      byDay: [...byDay.entries()].map(([date, p]) => ({ date, online: p.online.out(), counter: p.counter.out(), total: toBirr(sum(p)) })),
+      bySeller: [...bySeller.values()]
+        .sort((a, b) => b.total.cents - a.total.cents || a.name.localeCompare(b.name))
+        .map((s) => ({ name: s.name, ...s.total.out() })),
+      counterByMethod: [...counterByMethod.entries()]
+        .sort((a, b) => b[1].cents - a[1].cents)
+        .map(([method, m]) => ({ method, ...m.out() })),
+  }
+}
+
 export const getCompanySales = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const period = readPeriod(req, res)
     if (!period) return
-    const range = periodRange(period)
-
-    const operator = await prisma.operator.findUnique({
-      where: { id: req.params.operatorId as string },
-      select: { id: true, companyName: true, status: true, isDemo: true, commissionPercent: true },
-    })
-    if (!operator) {
+    const data = await companySales(req.params.operatorId as string, period)
+    if (!data) {
       res.status(404).json({ success: false, error: 'Company not found' })
       return
     }
-
-    const rows = await prisma.booking.findMany({
-      where: { AND: [SALE_BOOKING, { createdAt: { gte: range.from, lt: range.to } }, { schedule: { bus: { operatorId: operator.id } } }] },
-      select: {
-        source: true, status: true, totalPrice: true, refundAmount: true, commissionPercent: true, createdAt: true,
-        schedule: { select: { route: { select: { fromCity: true, toCity: true } } } },
-        soldByStaff: { select: { user: { select: { name: true } } } },
-        payment: { select: { method: true } },
-      },
-    })
-
-    type Pair = { online: MoneyCents; counter: MoneyCents }
-    const pair = (): Pair => ({ online: new MoneyCents(), counter: new MoneyCents() })
-    const online = new MoneyCents()
-    const counter = new MoneyCents()
-    let commission = 0
-    const byRoute = new Map<string, Pair & { fromCity: string; toCity: string }>()
-    const byDay = new Map<string, Pair>(range.days.map((d) => [d, pair()]))
-    const bySeller = new Map<string, { name: string; total: MoneyCents }>()
-    const counterByMethod = new Map<string, MoneyCents>()
-
-    for (const r of rows) {
-      const side = r.source === 'COUNTER' ? 'counter' : 'online'
-      ;(side === 'counter' ? counter : online).add(r)
-      if (side === 'online') commission += saleCommissionCents(r, r.commissionPercent, operator.commissionPercent)
-
-      const { fromCity, toCity } = r.schedule.route
-      const key = `${fromCity}→${toCity}`
-      const route = byRoute.get(key) ?? { ...pair(), fromCity, toCity }
-      route[side].add(r)
-      byRoute.set(key, route)
-
-      byDay.get(addisDateString(r.createdAt))?.[side].add(r)
-
-      if (side === 'counter') {
-        const name = r.soldByStaff?.user.name ?? 'Unknown'
-        const seller = bySeller.get(name) ?? { name, total: new MoneyCents() }
-        seller.total.add(r)
-        bySeller.set(name, seller)
-        const method = r.payment?.method ?? 'UNKNOWN'
-        const m = counterByMethod.get(method) ?? new MoneyCents()
-        m.add(r)
-        counterByMethod.set(method, m)
-      }
-    }
-
-    const sum = (p: Pair) => p.online.cents + p.counter.cents
-    res.json({
-      success: true,
-      data: {
-        period,
-        from: range.days[0],
-        to: range.days[range.days.length - 1],
-        company: { id: operator.id, companyName: operator.companyName, status: operator.status, isDemo: operator.isDemo, commissionPercent: operator.commissionPercent },
-        totals: { online: online.out(), counter: counter.out(), total: toBirr(online.cents + counter.cents), commission: toBirr(commission) },
-        byRoute: [...byRoute.values()]
-          .sort((a, b) => sum(b) - sum(a) || a.fromCity.localeCompare(b.fromCity))
-          .map((r) => ({ fromCity: r.fromCity, toCity: r.toCity, online: r.online.out(), counter: r.counter.out(), total: toBirr(sum(r)) })),
-        byDay: [...byDay.entries()].map(([date, p]) => ({ date, online: p.online.out(), counter: p.counter.out(), total: toBirr(sum(p)) })),
-        bySeller: [...bySeller.values()]
-          .sort((a, b) => b.total.cents - a.total.cents || a.name.localeCompare(b.name))
-          .map((s) => ({ name: s.name, ...s.total.out() })),
-        counterByMethod: [...counterByMethod.entries()]
-          .sort((a, b) => b[1].cents - a[1].cents)
-          .map(([method, m]) => ({ method, ...m.out() })),
-      },
-    })
+    res.json({ success: true, data })
   } catch (error) {
     console.error('GetCompanySales error:', error)
+    res.status(500).json({ success: false, error: 'Internal server error' })
+  }
+}
+
+// ─── Manager: my own company's sales (same numbers as the admin sees for it) ──
+export const getMySales = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const operatorId = companyOf(req, res)
+    if (!operatorId) return
+    const period = readPeriod(req, res)
+    if (!period) return
+    const data = await companySales(operatorId, period)
+    if (!data) {
+      res.status(404).json({ success: false, error: 'Operator not found' })
+      return
+    }
+    res.json({ success: true, data })
+  } catch (error) {
+    console.error('GetMySales error:', error)
     res.status(500).json({ success: false, error: 'Internal server error' })
   }
 }

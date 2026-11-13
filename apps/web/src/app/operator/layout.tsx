@@ -6,7 +6,7 @@ import { useAuthStore } from '@/store/auth.store'
 import { useStaffGuard } from '@/hooks/useStaffGuard'
 import SuspendedNotice from '@/components/SuspendedNotice'
 import Link from 'next/link'
-import { Menu, Bus, Ticket, LayoutDashboard, LogOut, Calendar, MapPin, Users, Banknote, Plus, ClipboardCheck, Wallet } from 'lucide-react'
+import { Menu, Bus, Ticket, LayoutDashboard, LogOut, Calendar, MapPin, Users, Banknote, Plus, ClipboardCheck, Wallet, BarChart3 } from 'lucide-react'
 
 const navItems = [
   { href: '/operator', label: 'Dashboard', icon: LayoutDashboard },
@@ -16,6 +16,7 @@ const navItems = [
   { href: '/operator/bookings', label: 'Bookings', icon: Ticket },
   { href: '/counter', label: 'Sell tickets', icon: Plus },
   { href: '/operator/counter-sales', label: 'Counter sales', icon: Banknote },
+  { href: '/operator/sales', label: 'Sales', icon: BarChart3 },
   { href: '/operator/earnings', label: 'Earnings', icon: Wallet },
   { href: '/checker', label: 'Boarding list', icon: ClipboardCheck },
   { href: '/operator/staff', label: 'Staff', icon: Users },
@@ -78,7 +79,7 @@ export default function OperatorLayout({ children }: { children: React.ReactNode
 
         {/* Nav */}
         <nav style={{ flex: 1, padding: '16px 12px' }}>
-          {navItems.filter((item) => (item.href !== '/operator/staff' && item.href !== '/operator/counter-sales' && item.href !== '/counter') || user?.role !== 'ADMIN').map((item) => {
+          {navItems.filter((item) => (item.href !== '/operator/staff' && item.href !== '/operator/sales' && item.href !== '/operator/counter-sales' && item.href !== '/counter') || user?.role !== 'ADMIN').map((item) => {
             const Icon = item.icon
             const isActive = pathname === item.href
             return (
