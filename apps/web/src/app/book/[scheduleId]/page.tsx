@@ -40,53 +40,53 @@ interface PointOption {
   offsetMin: number
 }
 
-// A list of places to choose from, each with the estimated time the bus is there
-function PointPicker({ points, value, onChange, departure, noneLabel }: {
+// A dropdown of places to choose from, each with the estimated time the bus is there
+function PointSelect({ points, value, onChange, departure, placeholder, noneLabel, label }: {
   points: PointOption[]
   value: string
   onChange: (id: string) => void
   departure: string
+  // Shown first and not choosable, for a required choice
+  placeholder?: string
+  // Shown first and choosable, for an optional choice
   noneLabel?: string
+  label: string
 }) {
-  const row = (selected: boolean) => ({
-    display: 'flex', alignItems: 'center', gap: '12px', width: '100%', textAlign: 'left' as const,
-    padding: '12px 14px', borderRadius: '12px', cursor: 'pointer',
-    border: selected ? '2px solid #C0392B' : '1px solid #E5E5E5',
-    background: selected ? '#FFF5F5' : 'white',
-  })
-  const dot = (selected: boolean) => ({
-    width: '18px', height: '18px', borderRadius: '50%', flexShrink: 0,
-    border: selected ? '5px solid #C0392B' : '2px solid #CCC', background: 'white',
-  })
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-      {noneLabel && (
-        <button type="button" onClick={() => onChange('')} style={row(value === '')}>
-          <span style={dot(value === '')} />
-          <span style={{ fontSize: '14px', color: '#555' }}>{noneLabel}</span>
-        </button>
+    <select
+      aria-label={label}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      style={{
+        width: '100%', padding: '14px 16px', borderRadius: '12px', fontSize: '16px',
+        border: value ? '2px solid #C0392B' : '1px solid #E5E5E5',
+        background: 'white', color: value ? '#1a1a1a' : '#777', cursor: 'pointer',
+      }}
+    >
+      {noneLabel ? (
+        <option value="">{noneLabel}</option>
+      ) : (
+        <option value="" disabled>{placeholder ?? 'Choose...'}</option>
       )}
       {points.map((p) => {
-        const selected = value === p.id
         const at = new Date(new Date(departure).getTime() + p.offsetMin * 60000).toISOString()
-        return (
-          <button type="button" key={p.id} onClick={() => onChange(p.id)} style={row(selected)}>
-            <span style={dot(selected)} />
-            <span style={{ flex: 1, fontSize: '14px', fontWeight: 600, color: '#1a1a1a' }}>{p.name}</span>
-            <span style={{ fontSize: '12px', color: '#999', whiteSpace: 'nowrap' }}>~{formatTime(at)}</span>
-          </button>
-        )
+        return <option key={p.id} value={p.id}>{p.name} · ~{formatTime(at)}</option>
       })}
-    </div>
+    </select>
   )
 }
+
+// Most passengers on one booking (the API accepts at most 10 seats)
+const MAX_PASSENGERS = 10
 
 export default function BookPage() {
   const { scheduleId } = useParams<{ scheduleId: string }>()
   const searchParams = useSearchParams()
   const router = useRouter()
   const { isAuthenticated, loadFromStorage } = useAuthStore()
-  const passengers = Number(searchParams.get('passengers')) || 1
+  const [passengers, setPassengers] = useState(() =>
+    Math.min(MAX_PASSENGERS, Math.max(1, Math.floor(Number(searchParams.get('passengers'))) || 1))
+  )
 
   const [schedule, setSchedule] = useState<ScheduleDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -144,6 +144,34 @@ export default function BookPage() {
       String(i + 1).padStart(2, '0')
     )
   : []
+
+  // Never more passengers than free seats (and at least 1 so the page still works when sold out)
+  const freeSeats = allSeats.length - bookedSeats.length
+  const maxPassengers = Math.max(1, Math.min(MAX_PASSENGERS, freeSeats))
+
+  const changePassengers = (next: number) => {
+    const n = Math.min(maxPassengers, Math.max(1, next))
+    if (n === passengers) return
+    setPassengers(n)
+    // Fewer passengers than chosen seats: let go of the seats chosen last
+    if (selectedSeats.length > n) {
+      const removed = selectedSeats.slice(n)
+      setSelectedSeats(selectedSeats.slice(0, n))
+      toast(`Seat ${removed.join(', ')} removed`)
+    }
+    // Keep the address in step so a refresh or a shared link keeps the count
+    router.replace(`/book/${scheduleId}?passengers=${n}`, { scroll: false })
+  }
+
+  // The link may ask for more passengers than there are free seats
+  useEffect(() => {
+    if (!schedule || loading) return
+    if (passengers > maxPassengers) {
+      setPassengers(maxPassengers)
+      toast(`Only ${maxPassengers} seat${maxPassengers > 1 ? 's' : ''} left on this trip`)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [schedule, loading, maxPassengers])
 
   const pickupMissing = pickupPoints.length > 0 && !pickupId
   const canBook = selectedSeats.length === passengers && !pickupMissing && schedule?.status !== 'CLOSED' && schedule?.bookable !== false
@@ -286,7 +314,7 @@ export default function BookPage() {
             <p style={{ fontSize: '13px', color: '#999', margin: '4px 0 16px' }}>
               Choose your pickup point. Times are estimates, so please be there 10–15 minutes early.
             </p>
-            <PointPicker points={pickupPoints} value={pickupId} onChange={setPickupId} departure={schedule.departureTime} />
+            <PointSelect label="Pickup point" points={pickupPoints} value={pickupId} onChange={setPickupId} departure={schedule.departureTime} placeholder="Choose your pickup point" />
           </div>
         )}
 
@@ -309,6 +337,28 @@ export default function BookPage() {
                   <span style={{ fontSize: '12px', color: '#999' }}>{l.label}</span>
                 </div>
               ))}
+            </div>
+          </div>
+
+          {/* Number of passengers */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '12px 16px', marginBottom: '20px', background: '#F8F8F8', borderRadius: '12px' }}>
+            <span style={{ fontSize: '14px', fontWeight: 600, color: '#1a1a1a' }}>Number of passengers</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+              <button
+                type="button"
+                aria-label="Fewer passengers"
+                onClick={() => changePassengers(passengers - 1)}
+                disabled={passengers <= 1}
+                style={{ width: '40px', height: '40px', borderRadius: '10px', border: '1px solid #E0E0E0', background: 'white', fontSize: '20px', fontWeight: 600, color: '#1a1a1a', cursor: passengers <= 1 ? 'not-allowed' : 'pointer', opacity: passengers <= 1 ? 0.4 : 1 }}
+              >−</button>
+              <span aria-live="polite" style={{ minWidth: '20px', textAlign: 'center', fontSize: '18px', fontWeight: 700, color: '#1a1a1a' }}>{passengers}</span>
+              <button
+                type="button"
+                aria-label="More passengers"
+                onClick={() => changePassengers(passengers + 1)}
+                disabled={passengers >= maxPassengers}
+                style={{ width: '40px', height: '40px', borderRadius: '10px', border: '1px solid #E0E0E0', background: 'white', fontSize: '20px', fontWeight: 600, color: '#1a1a1a', cursor: passengers >= maxPassengers ? 'not-allowed' : 'pointer', opacity: passengers >= maxPassengers ? 0.4 : 1 }}
+              >+</button>
             </div>
           </div>
 
@@ -386,7 +436,7 @@ export default function BookPage() {
             <p style={{ fontSize: '13px', color: '#999', margin: '4px 0 16px' }}>
               You can also ask the driver to stop along the way.
             </p>
-            <PointPicker points={dropoffPoints} value={dropoffId} onChange={setDropoffId} departure={schedule.arrivalTime} noneLabel="I'll tell the driver" />
+            <PointSelect label="Drop-off point" points={dropoffPoints} value={dropoffId} onChange={setDropoffId} departure={schedule.arrivalTime} noneLabel="I'll tell the driver" />
           </div>
         )}
 
