@@ -24,6 +24,11 @@ export interface TripRequest {
   seatNumbers: string[]
   pickupPointId?: string
   dropoffPointId?: string
+  /**
+   * One entry per seat, each with its own stops. When given, these are checked
+   * instead of pickupPointId / dropoffPointId, and must cover exactly the seats.
+   */
+  passengers?: { seatNumber: string; pickupPointId?: string; dropoffPointId?: string }[]
   /** Counter sales: the trip must belong to this company (else "not found"). */
   operatorId?: string
   now?: Date
@@ -35,11 +40,17 @@ export interface TripRequest {
  * the seats exist, and the pickup / drop-off points are valid.
  */
 export async function validateTripForSale(req: TripRequest, client: PrismaClient = defaultPrisma) {
-  const { channel, scheduleId, seatNumbers, pickupPointId, dropoffPointId, operatorId } = req
+  const { channel, scheduleId, seatNumbers, operatorId } = req
   const now = req.now ?? new Date()
 
   if (new Set(seatNumbers).size !== seatNumbers.length) {
     throw new SaleError(400, 'Each seat can only be selected once')
+  }
+  if (req.passengers) {
+    const named = req.passengers.map((p) => p.seatNumber)
+    if (new Set(named).size !== named.length || named.length !== seatNumbers.length || !named.every((s) => seatNumbers.includes(s))) {
+      throw new SaleError(400, 'Each seat needs exactly one passenger')
+    }
   }
 
   const schedule = await client.schedule.findUnique({
@@ -78,16 +89,20 @@ export async function validateTripForSale(req: TripRequest, client: PrismaClient
   const pickupOptions = points.filter((p) => p.kind !== 'DROPOFF')
   const dropoffOptions = points.filter((p) => p.kind !== 'PICKUP')
 
-  if (pickupOptions.length > 0) {
-    if (!pickupPointId) throw new SaleError(400, 'Please choose your pickup point')
-    if (!pickupOptions.some((p) => p.id === pickupPointId)) {
+  // Every passenger is checked on their own: one passenger's stops can differ from another's
+  const stops = req.passengers ?? [{ pickupPointId: req.pickupPointId, dropoffPointId: req.dropoffPointId }]
+  for (const { pickupPointId, dropoffPointId } of stops) {
+    if (pickupOptions.length > 0) {
+      if (!pickupPointId) throw new SaleError(400, 'Please choose your pickup point')
+      if (!pickupOptions.some((p) => p.id === pickupPointId)) {
+        throw new SaleError(400, 'That pickup point is not available for this trip')
+      }
+    } else if (pickupPointId) {
       throw new SaleError(400, 'That pickup point is not available for this trip')
     }
-  } else if (pickupPointId) {
-    throw new SaleError(400, 'That pickup point is not available for this trip')
-  }
-  if (dropoffPointId && !dropoffOptions.some((p) => p.id === dropoffPointId)) {
-    throw new SaleError(400, 'That drop-off point is not available for this trip')
+    if (dropoffPointId && !dropoffOptions.some((p) => p.id === dropoffPointId)) {
+      throw new SaleError(400, 'That drop-off point is not available for this trip')
+    }
   }
 
   return schedule

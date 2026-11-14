@@ -121,10 +121,11 @@ export const deletePickupPoint = async (req: AuthRequest, res: Response): Promis
       return
     }
 
-    const used = await prisma.booking.count({
-      where: { OR: [{ pickupPointId: id }, { dropoffPointId: id }] },
-    })
-    if (used > 0) {
+    const [usedByBookings, usedByPassengers] = await Promise.all([
+      prisma.booking.count({ where: { OR: [{ pickupPointId: id }, { dropoffPointId: id }] } }),
+      prisma.bookingPassenger.count({ where: { OR: [{ pickupPointId: id }, { dropoffPointId: id }] } }),
+    ])
+    if (usedByBookings + usedByPassengers > 0) {
       res.status(409).json({
         success: false,
         error: 'Passengers have already booked this point, so it cannot be deleted',

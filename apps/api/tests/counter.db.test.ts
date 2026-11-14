@@ -24,6 +24,9 @@ if (TEST_URL && NORMAL_URL && TEST_URL === NORMAL_URL) {
 if (TEST_URL) process.env.DATABASE_URL = TEST_URL
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-only-for-tests'
 
+// Online bookings need a name for every seat
+const pax = (seats: string[]) => seats.map((s) => ({ seatNumber: s, name: `Test Passenger ${s}` }))
+
 type Prisma = typeof import('../src/lib/prisma').prisma
 let prisma: Prisma
 let server: http.Server
@@ -238,7 +241,7 @@ describe.skipIf(!TEST_URL)('counter sales (database, real routes)', () => {
       const seat = String(i).padStart(2, '0')
       const [counter, online] = await Promise.all([
         sell(sellerA.tok, sale(trip.id, { seatNumbers: [seat] })),
-        api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: [seat] }),
+        api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: [seat], passengers: pax([seat]) }),
       ])
       expect([counter.status, online.status].sort()).toEqual([201, 409])
     }
@@ -409,7 +412,7 @@ describe.skipIf(!TEST_URL)('counter sales (database, real routes)', () => {
 
   it('does not let online bookings be voided through the counter', async () => {
     const trip = await newTrip(busA)
-    const online = await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: ['01'] })
+    const online = await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: ['01'], passengers: pax(['01']) })
     expect(online.status).toBe(201)
     const out = await api('POST', `/api/v1/counter/sales/${online.body.data.booking.id}/void`, managerA.tok, { reason: 'nope' })
     expect(out.status).toBe(404)

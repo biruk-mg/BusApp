@@ -22,6 +22,9 @@ if (TEST_URL && NORMAL_URL && TEST_URL === NORMAL_URL) {
 if (TEST_URL) process.env.DATABASE_URL = TEST_URL
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-only-for-tests'
 
+// Online bookings need a name for every seat
+const pax = (seats: string[]) => seats.map((s) => ({ seatNumber: s, name: `Test Passenger ${s}` }))
+
 type Prisma = typeof import('../src/lib/prisma').prisma
 let prisma: Prisma
 let axiosGet: ReturnType<typeof vi.fn>
@@ -66,7 +69,7 @@ async function tripIn(hours: number) {
 async function bookAndPay(hours: number, pay = true) {
   const trip = await tripIn(hours)
   const seat = String(++seatCounter).padStart(2, '0')
-  const out = await api('POST', '/api/v1/bookings', passenger.tok, { scheduleId: trip.id, seatNumbers: [seat] })
+  const out = await api('POST', '/api/v1/bookings', passenger.tok, { scheduleId: trip.id, seatNumbers: [seat], passengers: pax([seat]) })
   expect(out.status, JSON.stringify(out.body)).toBe(201)
   const booking = out.body.data.booking
   if (pay) {
@@ -253,7 +256,7 @@ describe.skipIf(!TEST_URL)('cancellation and refunds (database, real routes)', (
   it('frees the seat again after a cancellation', async () => {
     const b = await bookAndPay(30)
     await api('PATCH', `/api/v1/bookings/${b.id}/cancel`, passenger.tok)
-    const again = await api('POST', '/api/v1/bookings', passenger.tok, { scheduleId: b.scheduleId, seatNumbers: b.seatNumbers })
+    const again = await api('POST', '/api/v1/bookings', passenger.tok, { scheduleId: b.scheduleId, seatNumbers: b.seatNumbers, passengers: pax(b.seatNumbers) })
     expect(again.status, JSON.stringify(again.body)).toBe(201)
   })
 })

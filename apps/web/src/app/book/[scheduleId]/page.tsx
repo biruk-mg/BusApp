@@ -76,6 +76,13 @@ function PointSelect({ points, value, onChange, departure, placeholder, noneLabe
   )
 }
 
+interface PersonForm { name: string; phone: string; pickupId: string; dropoffId: string }
+const inputStyle: React.CSSProperties = {
+  width: '100%', padding: '14px 16px', borderRadius: '12px', fontSize: '16px',
+  border: '1px solid #E5E5E5', background: 'white', color: '#1a1a1a', boxSizing: 'border-box',
+}
+const labelStyle: React.CSSProperties = { display: 'block', fontSize: '13px', fontWeight: 600, color: '#555', margin: '0 0 6px' }
+
 // Most passengers on one booking (the API accepts at most 10 seats)
 const MAX_PASSENGERS = 10
 
@@ -83,7 +90,7 @@ export default function BookPage() {
   const { scheduleId } = useParams<{ scheduleId: string }>()
   const searchParams = useSearchParams()
   const router = useRouter()
-  const { isAuthenticated, loadFromStorage } = useAuthStore()
+  const { isAuthenticated, loadFromStorage, user } = useAuthStore()
   const [passengers, setPassengers] = useState(() =>
     Math.min(MAX_PASSENGERS, Math.max(1, Math.floor(Number(searchParams.get('passengers'))) || 1))
   )
@@ -95,8 +102,8 @@ export default function BookPage() {
   const [booking, setBooking] = useState(false)
   const [pickupPoints, setPickupPoints] = useState<PointOption[]>([])
   const [dropoffPoints, setDropoffPoints] = useState<PointOption[]>([])
-  const [pickupId, setPickupId] = useState('')
-  const [dropoffId, setDropoffId] = useState('')
+  // Details of each passenger, by seat. The first seat chosen is passenger 1.
+  const [people, setPeople] = useState<Record<string, PersonForm>>({})
   const [departures, setDepartures] = useState<Departure[]>([])
 
   useEffect(() => {
@@ -109,8 +116,7 @@ export default function BookPage() {
       // Switching to another departure starts a fresh selection
       setLoading(true)
       setSelectedSeats([])
-      setPickupId('')
-      setDropoffId('')
+      setPeople({})
       setDepartures([])
       try {
         const detailRes = await api.get(`/schedules/${scheduleId}`)
@@ -173,8 +179,17 @@ export default function BookPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [schedule, loading, maxPassengers])
 
-  const pickupMissing = pickupPoints.length > 0 && !pickupId
-  const canBook = selectedSeats.length === passengers && !pickupMissing && schedule?.status !== 'CLOSED' && schedule?.bookable !== false
+  // The first seat chosen is passenger 1; their name starts as the account name.
+  // Other passengers' stops start as "same as passenger 1" (empty).
+  const personOf = (seat: string, index: number): PersonForm =>
+    people[seat] ?? { name: index === 0 ? (user?.name ?? '') : '', phone: '', pickupId: '', dropoffId: '' }
+  const setPerson = (seat: string, index: number, patch: Partial<PersonForm>) =>
+    setPeople((all) => ({ ...all, [seat]: { ...personOf(seat, index), ...patch } }))
+  const first = selectedSeats.length > 0 ? personOf(selectedSeats[0], 0) : null
+
+  const namesMissing = selectedSeats.some((seat, i) => personOf(seat, i).name.trim().length < 2)
+  const pickupMissing = pickupPoints.length > 0 && !!first && !first.pickupId
+  const canBook = selectedSeats.length === passengers && !namesMissing && !pickupMissing && schedule?.status !== 'CLOSED' && schedule?.bookable !== false
 
   const toggleSeat = (seat: string) => {
     if (bookedSeats.includes(seat)) return
@@ -191,15 +206,26 @@ export default function BookPage() {
 
   const handleBook = async () => {
     if (!isAuthenticated) { toast.error('Please login'); router.push('/login'); return }
-    if (pickupPoints.length > 0 && !pickupId) { toast.error('Please choose your pickup point'); return }
     if (selectedSeats.length !== passengers) { toast.error(`Select exactly ${passengers} seat${passengers > 1 ? 's' : ''}`); return }
+    if (namesMissing) { toast.error('Enter the name of every passenger'); return }
+    if (pickupMissing) { toast.error('Please choose your pickup point'); return }
     setBooking(true)
     try {
       const res = await api.post('/bookings', {
         scheduleId,
         seatNumbers: selectedSeats,
-        pickupPointId: pickupId || undefined,
-        dropoffPointId: dropoffId || undefined,
+        // One passenger per seat, each with their own name and stops. A passenger who
+        // left their stops empty gets passenger 1's.
+        passengers: selectedSeats.map((seat, i) => {
+          const p = personOf(seat, i)
+          return {
+            seatNumber: seat,
+            name: p.name.trim(),
+            phone: p.phone.trim() || undefined,
+            pickupPointId: p.pickupId || first?.pickupId || undefined,
+            dropoffPointId: p.dropoffId || first?.dropoffId || undefined,
+          }
+        }),
       })
       toast.success('Seats reserved. Complete your payment to confirm.')
       router.push(`/bookings/${res.data.data.booking.id}`)
@@ -302,19 +328,6 @@ export default function BookPage() {
                 )
               })}
             </div>
-          </div>
-        )}
-
-        {/* Pickup point (required when the operator has pickup points) */}
-        {pickupPoints.length > 0 && (
-          <div className="seat-card" style={{ background: 'white', borderRadius: '16px', border: '1px solid #EEEEEE', padding: '28px', marginBottom: '20px' }}>
-            <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#1a1a1a' }}>
-              Where will you board? <span style={{ color: '#C0392B' }}>*</span>
-            </h2>
-            <p style={{ fontSize: '13px', color: '#999', margin: '4px 0 16px' }}>
-              Choose your pickup point. Times are estimates, so please be there 10–15 minutes early.
-            </p>
-            <PointSelect label="Pickup point" points={pickupPoints} value={pickupId} onChange={setPickupId} departure={schedule.departureTime} placeholder="Choose your pickup point" />
           </div>
         )}
 
@@ -427,18 +440,66 @@ export default function BookPage() {
 </div>
         </div>
 
-        {/* Drop-off point (optional) */}
-        {dropoffPoints.length > 0 && (
-          <div className="seat-card" style={{ background: 'white', borderRadius: '16px', border: '1px solid #EEEEEE', padding: '28px', marginBottom: '20px' }}>
-            <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#1a1a1a' }}>
-              Where do you want to get off? <span style={{ fontSize: '13px', fontWeight: 500, color: '#999' }}>(optional)</span>
-            </h2>
-            <p style={{ fontSize: '13px', color: '#999', margin: '4px 0 16px' }}>
-              You can also ask the driver to stop along the way.
-            </p>
-            <PointSelect label="Drop-off point" points={dropoffPoints} value={dropoffId} onChange={setDropoffId} departure={schedule.arrivalTime} noneLabel="I'll tell the driver" />
-          </div>
-        )}
+        {/* Passenger details: a name for every seat, and each passenger's own stops */}
+        <div className="seat-card" style={{ background: 'white', borderRadius: '16px', border: '1px solid #EEEEEE', padding: '28px', marginBottom: '20px' }}>
+          <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#1a1a1a' }}>Passenger details</h2>
+          <p style={{ fontSize: '13px', color: '#999', margin: '4px 0 16px' }}>
+            {selectedSeats.length === 0
+              ? 'Choose your seats above, then enter the name of each passenger.'
+              : `Enter the name of each passenger.${pickupPoints.length > 0 ? ' Times are estimates, so please be at the pickup point 10–15 minutes early.' : ''}`}
+          </p>
+
+          {selectedSeats.map((seat, i) => {
+            const p = personOf(seat, i)
+            const sameAs = 'Same as passenger 1'
+            return (
+              <div key={seat} style={{ background: '#F8F8F8', borderRadius: '14px', padding: '16px', marginBottom: '12px' }}>
+                <div style={{ fontSize: '14px', fontWeight: 700, color: '#1a1a1a', marginBottom: '12px' }}>
+                  Passenger {i + 1} <span style={{ fontWeight: 500, color: '#999' }}>· Seat {seat}</span>
+                </div>
+
+                <label style={labelStyle}>Full name <span style={{ color: '#C0392B' }}>*</span></label>
+                <input
+                  value={p.name} onChange={(e) => setPerson(seat, i, { name: e.target.value })}
+                  aria-label={`Name of passenger ${i + 1}`} autoComplete={i === 0 ? 'name' : 'off'} maxLength={80}
+                  style={{ ...inputStyle, marginBottom: '12px' }}
+                />
+
+                <label style={labelStyle}>Phone number <span style={{ fontWeight: 400, color: '#999' }}>(optional)</span></label>
+                <input
+                  value={p.phone} onChange={(e) => setPerson(seat, i, { phone: e.target.value })}
+                  aria-label={`Phone of passenger ${i + 1}`} inputMode="tel" autoComplete={i === 0 ? 'tel' : 'off'} maxLength={30}
+                  placeholder="0911223344"
+                  style={{ ...inputStyle, marginBottom: '12px' }}
+                />
+
+                {pickupPoints.length > 0 && (
+                  <div style={{ marginBottom: dropoffPoints.length > 0 ? '12px' : 0 }}>
+                    <label style={labelStyle}>
+                      Where will {i === 0 ? 'you' : 'they'} board?{i === 0 && <span style={{ color: '#C0392B' }}> *</span>}
+                    </label>
+                    <PointSelect
+                      label={`Pickup point of passenger ${i + 1}`} points={pickupPoints} value={p.pickupId}
+                      onChange={(id) => setPerson(seat, i, { pickupId: id })} departure={schedule.departureTime}
+                      {...(i === 0 ? { placeholder: 'Choose your pickup point' } : { noneLabel: sameAs })}
+                    />
+                  </div>
+                )}
+
+                {dropoffPoints.length > 0 && (
+                  <div>
+                    <label style={labelStyle}>Where will {i === 0 ? 'you' : 'they'} get off? <span style={{ fontWeight: 400, color: '#999' }}>(optional)</span></label>
+                    <PointSelect
+                      label={`Drop-off point of passenger ${i + 1}`} points={dropoffPoints} value={p.dropoffId}
+                      onChange={(id) => setPerson(seat, i, { dropoffId: id })} departure={schedule.arrivalTime}
+                      noneLabel={i === 0 ? "I'll tell the driver" : sameAs}
+                    />
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
 
         {/* Confirm Button */}
         <button
@@ -453,11 +514,13 @@ export default function BookPage() {
             transition: 'all 0.2s',
           }}
         >
-          {booking ? 'Reserving...' : pickupMissing
+          {booking ? 'Reserving...' : selectedSeats.length < passengers
+            ? `Select ${passengers - selectedSeats.length} more seat${passengers - selectedSeats.length > 1 ? 's' : ''}`
+            : namesMissing
+            ? 'Enter the name of every passenger'
+            : pickupMissing
             ? 'Choose your pickup point'
-            : selectedSeats.length === passengers
-            ? `Reserve Seats — ${formatPrice(schedule.price * passengers)}`
-            : `Select ${passengers - selectedSeats.length} more seat${passengers - selectedSeats.length > 1 ? 's' : ''}`
+            : `Reserve Seats — ${formatPrice(schedule.price * passengers)}`
           }
         </button>
       </div>

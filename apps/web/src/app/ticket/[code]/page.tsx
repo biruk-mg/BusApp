@@ -22,6 +22,8 @@ interface Ticket {
   arrivalTime: string
   pickupPoint: { name: string; offsetMin: number } | null
   dropoffPoint: { name: string } | null
+  // One entry per seat, each with their own stops. Empty for older tickets.
+  passengers?: { seatNumber: string; name: string; pickupPoint: { name: string; offsetMin: number } | null; dropoffPoint: { name: string } | null }[]
   qrCode: string
 }
 
@@ -53,6 +55,8 @@ function TicketView() {
     </div>
   )
 
+  const people = ticket.passengers ?? []
+
   return (
     <div style={{ maxWidth: '420px', margin: '0 auto', padding: '24px 16px' }}>
       <div style={{ background: 'white', borderRadius: '20px', overflow: 'hidden', boxShadow: '0 4px 24px rgba(0,0,0,0.08)' }}>
@@ -73,10 +77,20 @@ function TicketView() {
           <img src={ticket.qrCode} alt="Ticket QR code" width={190} height={190} style={{ margin: '0 auto', opacity: valid ? 1 : 0.25 }} />
           <div style={{ fontSize: '26px', fontWeight: 800, letterSpacing: '4px', margin: '6px 0 14px' }}>{ticket.code}</div>
           <div style={{ textAlign: 'left' }}>
-            {row('Passenger', ticket.passengerName ?? '—')}
-            {row(ticket.seatNumbers.length > 1 ? 'Seats' : 'Seat', ticket.seatNumbers.join(', '))}
-            {ticket.pickupPoint && row('Pickup', `${ticket.pickupPoint.name} (~${formatTime(new Date(new Date(ticket.departureTime).getTime() + ticket.pickupPoint.offsetMin * 60000).toISOString())})`)}
-            {ticket.dropoffPoint && row('Drop-off', ticket.dropoffPoint.name)}
+            {people.length > 0 ? people.map((p) => (
+              <div key={p.seatNumber} style={{ borderBottom: '1px solid #F0F0F0', paddingBottom: '4px', marginBottom: '4px' }}>
+                {row(`Seat ${p.seatNumber}`, p.name)}
+                {p.pickupPoint && row('Pickup', `${p.pickupPoint.name} (~${formatTime(new Date(new Date(ticket.departureTime).getTime() + p.pickupPoint.offsetMin * 60000).toISOString())})`)}
+                {p.dropoffPoint && row('Drop-off', p.dropoffPoint.name)}
+              </div>
+            )) : (
+              <>
+                {row('Passenger', ticket.passengerName ?? '—')}
+                {row(ticket.seatNumbers.length > 1 ? 'Seats' : 'Seat', ticket.seatNumbers.join(', '))}
+                {ticket.pickupPoint && row('Pickup', `${ticket.pickupPoint.name} (~${formatTime(new Date(new Date(ticket.departureTime).getTime() + ticket.pickupPoint.offsetMin * 60000).toISOString())})`)}
+                {ticket.dropoffPoint && row('Drop-off', ticket.dropoffPoint.name)}
+              </>
+            )}
             {row('Bus', `${ticket.plateNumber} · ${ticket.busType}`)}
             {row('Arrives', formatTime(ticket.arrivalTime))}
             {row('Paid', formatPrice(ticket.totalPrice))}

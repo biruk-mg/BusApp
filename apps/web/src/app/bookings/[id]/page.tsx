@@ -23,6 +23,8 @@ interface BookingDetail {
   ticketCode?: string | null
   pickupPoint?: { name: string; offsetMin: number } | null
   dropoffPoint?: { name: string } | null
+  // One entry per seat. Empty for older bookings: then the stops above apply.
+  passengers?: { id: string; seatNumber: string; name: string; pickupPoint?: { name: string; offsetMin: number } | null; dropoffPoint?: { name: string } | null }[]
   schedule: {
     departureTime: string
     arrivalTime: string
@@ -152,6 +154,7 @@ export default function BookingDetailPage() {
   )
 
   const isPaid = booking.payment?.status === 'SUCCESS'
+  const hasPeople = (booking.passengers?.length ?? 0) > 0
   const msLeft = booking.expiresAt ? new Date(booking.expiresAt).getTime() - now : null
   const holdLabel = msLeft !== null && msLeft > 0
     ? `${Math.floor(msLeft / 60000)}:${String(Math.floor((msLeft % 60000) / 1000)).padStart(2, '0')}`
@@ -260,10 +263,10 @@ export default function BookingDetailPage() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
               {[
                 { label: 'DATE', value: formatDate(booking.schedule.departureTime), icon: <Calendar size={12} /> },
-                ...(booking.pickupPoint
+                ...(booking.pickupPoint && !hasPeople
                   ? [{ label: 'PICKUP', value: `${booking.pickupPoint.name} · ~${formatTime(new Date(new Date(booking.schedule.departureTime).getTime() + booking.pickupPoint.offsetMin * 60000).toISOString())}`, icon: <MapPin size={12} /> }]
                   : []),
-                { label: 'DROP-OFF', value: booking.dropoffPoint ? booking.dropoffPoint.name : 'Tell the driver', icon: null },
+                ...(!hasPeople ? [{ label: 'DROP-OFF', value: booking.dropoffPoint ? booking.dropoffPoint.name : 'Tell the driver', icon: null }] : []),
                 { label: 'SEATS', value: booking.seatNumbers.join(', '), icon: null },
                 { label: 'BUS TYPE', value: booking.schedule.bus.busType, icon: null },
                 { label: 'OPERATOR', value: booking.schedule.bus.operator.companyName, icon: null },
@@ -281,6 +284,25 @@ export default function BookingDetailPage() {
                 </div>
               ))}
             </div>
+
+            {hasPeople && (
+              <div style={{ marginTop: '22px' }}>
+                <div style={{ fontSize: '10px', color: '#bbb', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '8px' }}>PASSENGERS</div>
+                {booking.passengers!.map((p) => (
+                  <div key={p.id} style={{ padding: '10px 0', borderTop: '1px solid #F2F2F2' }}>
+                    <div style={{ fontSize: '14px', fontWeight: 600, color: '#1a1a1a' }}>
+                      {p.name} <span style={{ fontWeight: 500, color: '#999' }}>· Seat {p.seatNumber}</span>
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#777', marginTop: '3px' }}>
+                      {p.pickupPoint
+                        ? `Boards at ${p.pickupPoint.name} · ~${formatTime(new Date(new Date(booking.schedule.departureTime).getTime() + p.pickupPoint.offsetMin * 60000).toISOString())}`
+                        : 'No pickup point'}
+                      {' · '}{p.dropoffPoint ? `Gets off at ${p.dropoffPoint.name}` : 'Tells the driver where to get off'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* QR Code */}

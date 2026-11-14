@@ -15,6 +15,17 @@ import { addisDateString, addisDayRange, isValidDateString } from '../lib/time'
 // Only paid tickets can board. PENDING (unpaid) and CANCELLED (expired or voided) never show.
 const BOARDABLE = ['CONFIRMED', 'COMPLETED'] as const
 
+const personSelect = {
+  id: true,
+  seatNumber: true,
+  name: true,
+  phone: true,
+  boardedAt: true,
+  pickupPoint: { select: { id: true, name: true, sequence: true, offsetMin: true } },
+  dropoffPoint: { select: { name: true } },
+  boardedByStaff: { select: { user: { select: { name: true } } } },
+} satisfies Prisma.BookingPassengerSelect
+
 const passengerSelect = {
   id: true,
   scheduleId: true,
@@ -29,26 +40,77 @@ const passengerSelect = {
   pickupPoint: { select: { id: true, name: true, sequence: true, offsetMin: true } },
   dropoffPoint: { select: { name: true } },
   boardedByStaff: { select: { user: { select: { name: true } } } },
+  // One row per seat. Tickets sold before passengers were recorded have none.
+  passengers: { orderBy: { seatNumber: 'asc' }, select: personSelect },
 } satisfies Prisma.BookingSelect
 
 type PassengerRow = Prisma.BookingGetPayload<{ select: typeof passengerSelect }>
 
-/** One passenger as the checker's screen needs it. Online passengers use their account name and phone. */
-function shapePassenger(b: PassengerRow) {
-  return {
-    id: b.id,
+/**
+ * The lines of the checker's screen for one ticket: one line per passenger (one per
+ * seat), each with their own name, stops and boarding. A ticket from before passengers
+ * were recorded is one line for the whole booking, as it always was.
+ * A line's id is the passenger's id, or the booking's id for such an older ticket.
+ */
+function shapePassengers(b: PassengerRow) {
+  const contactPhone = b.passengerPhone || b.user?.phone || null
+  if (b.passengers.length === 0) {
+    return [{
+      id: b.id,
+      bookingId: b.id,
+      scheduleId: b.scheduleId,
+      source: b.source,
+      name: b.passengerName || b.user?.name || 'Passenger',
+      phone: contactPhone,
+      seatNumbers: b.seatNumbers,
+      ticketCode: b.ticketCode,
+      pickupPoint: b.pickupPoint,
+      dropoffPoint: b.dropoffPoint?.name ?? null,
+      boarded: b.boardedAt !== null,
+      boardedAt: b.boardedAt,
+      boardedBy: b.boardedByStaff?.user.name ?? null,
+      groupSize: 1,
+    }]
+  }
+  return b.passengers.map((p) => ({
+    id: p.id,
+    bookingId: b.id,
     scheduleId: b.scheduleId,
     source: b.source,
-    name: b.passengerName || b.user?.name || 'Passenger',
-    phone: b.passengerPhone || b.user?.phone || null,
-    seatNumbers: b.seatNumbers,
+    name: p.name,
+    // A passenger with no phone of their own can be reached through whoever booked
+    phone: p.phone || contactPhone,
+    seatNumbers: [p.seatNumber],
     ticketCode: b.ticketCode,
-    pickupPoint: b.pickupPoint,
-    dropoffPoint: b.dropoffPoint?.name ?? null,
-    boarded: b.boardedAt !== null,
-    boardedAt: b.boardedAt,
-    boardedBy: b.boardedByStaff?.user.name ?? null,
+    pickupPoint: p.pickupPoint,
+    dropoffPoint: p.dropoffPoint?.name ?? null,
+    boarded: p.boardedAt !== null,
+    boardedAt: p.boardedAt,
+    boardedBy: p.boardedByStaff?.user.name ?? null,
+    groupSize: b.passengers.length,
+  }))
+}
+
+type Line = ReturnType<typeof shapePassengers>[number]
+
+/** The whole ticket as one summary (for the screen that shows a scanned ticket). */
+function summarize(lines: Line[]): Line {
+  const first = lines[0]
+  return {
+    ...first,
+    id: first.bookingId,
+    name: lines.length > 1 ? `${first.name} +${lines.length - 1}` : first.name,
+    seatNumbers: lines.flatMap((l) => l.seatNumbers),
+    boarded: lines.every((l) => l.boarded),
+    boardedAt: lines.every((l) => l.boarded) ? first.boardedAt : null,
   }
+}
+
+/** How many seats of these tickets have boarded, counting per passenger where it is recorded. */
+function boardedSeatCount(bookings: { seatNumbers: string[]; boardedAt: Date | null; passengers: { boardedAt: Date | null }[] }[]): number {
+  return bookings.reduce((n, b) => n + (b.passengers.length > 0
+    ? b.passengers.filter((p) => p.boardedAt).length
+    : b.boardedAt ? b.seatNumbers.length : 0), 0)
 }
 
 /** Passengers in the order the bus meets them: by pickup point, then by seat. People with no pickup point go last. */
@@ -80,7 +142,7 @@ export const listCheckinTrips = async (req: AuthRequest, res: Response): Promise
       include: {
         route: { select: { fromCity: true, toCity: true } },
         bus: { select: { plateNumber: true, busType: true, totalSeats: true } },
-        bookings: { where: { status: { in: [...BOARDABLE] } }, select: { seatNumbers: true, boardedAt: true } },
+        bookings: { where: { status: { in: [...BOARDABLE] } }, select: { seatNumbers: true, boardedAt: true, passengers: { select: { boardedAt: true } } } },
       },
       orderBy: { departureTime: 'asc' },
     })
@@ -92,7 +154,7 @@ export const listCheckinTrips = async (req: AuthRequest, res: Response): Promise
         trips: trips.map(({ bookings, ...t }) => ({
           ...t,
           soldSeats: bookings.reduce((n, b) => n + b.seatNumbers.length, 0),
-          boardedSeats: bookings.filter((b) => b.boardedAt).reduce((n, b) => n + b.seatNumbers.length, 0),
+          boardedSeats: boardedSeatCount(bookings),
         })),
       },
     })
@@ -121,7 +183,7 @@ export const getTripPassengers = async (req: AuthRequest, res: Response): Promis
       where: { scheduleId: trip.id, status: { in: [...BOARDABLE] } },
       select: passengerSelect,
     })
-    const passengers = sortPassengers(bookings.map(shapePassenger))
+    const passengers = sortPassengers(bookings.flatMap(shapePassengers))
 
     res.json({
       success: true,
@@ -139,35 +201,56 @@ export const getTripPassengers = async (req: AuthRequest, res: Response): Promis
 }
 
 // ─── Tick / untick a passenger ───────────────────────────
+// The id is one passenger's id (every ticket sold now) or a whole ticket's id (then it
+// ticks everyone on it, and is also how tickets from before passengers were recorded work).
 // Safe to repeat: ticking someone already ticked changes nothing (so a retry after a
 // network drop, or two checkers on one door, can't break anything or hide who ticked first).
 async function setBoarded(req: AuthRequest, res: Response, boarded: boolean): Promise<void> {
   try {
-    const booking = await prisma.booking.findFirst({
-      where: { id: req.params.id as string, schedule: { bus: { operatorId: req.operatorId } } },
-      select: { id: true, status: true, boardedAt: true },
+    const id = req.params.id as string
+    const mine = { schedule: { bus: { operatorId: req.operatorId } } }
+
+    const person = await prisma.bookingPassenger.findFirst({
+      where: { id, booking: mine },
+      select: { id: true, bookingId: true, booking: { select: { status: true } } },
     })
-    if (!booking) {
+    const ticket = person
+      ? null
+      : await prisma.booking.findFirst({
+          where: { id, ...mine },
+          select: { id: true, status: true, passengers: { select: { id: true } } },
+        })
+    if (!person && !ticket) {
       res.status(404).json({ success: false, error: 'Ticket not found' })
       return
     }
-    if (!(BOARDABLE as readonly string[]).includes(booking.status)) {
+    const status = person ? person.booking.status : ticket!.status
+    if (!(BOARDABLE as readonly string[]).includes(status)) {
       res.status(409).json({ success: false, error: 'This ticket is not valid (unpaid, expired or voided)' })
       return
     }
+    const bookingId = person ? person.bookingId : ticket!.id
 
-    // Only change the row if it is not already in the wanted state
-    const changed = await prisma.booking.updateMany({
-      where: { id: booking.id, boardedAt: boarded ? null : { not: null } },
-      data: boarded
-        ? { boardedAt: new Date(), boardedByStaffId: req.staffId }
-        : { boardedAt: null, boardedByStaffId: null },
-    })
+    // Only change rows that are not already in the wanted state
+    const wanted = boarded ? null : { not: null }
+    const data = boarded
+      ? { boardedAt: new Date(), boardedByStaffId: req.staffId }
+      : { boardedAt: null, boardedByStaffId: null }
+    let changed: { count: number }
+    if (person) {
+      changed = await prisma.bookingPassenger.updateMany({ where: { id: person.id, boardedAt: wanted }, data })
+    } else if (ticket!.passengers.length > 0) {
+      changed = await prisma.bookingPassenger.updateMany({ where: { bookingId, boardedAt: wanted }, data })
+    } else {
+      changed = await prisma.booking.updateMany({ where: { id: bookingId, boardedAt: wanted }, data })
+    }
 
-    const updated = await prisma.booking.findUniqueOrThrow({ where: { id: booking.id }, select: passengerSelect })
+    const updated = await prisma.booking.findUniqueOrThrow({ where: { id: bookingId }, select: passengerSelect })
+    const lines = shapePassengers(updated)
+    const line = lines.find((l) => l.id === id) ?? summarize(lines)
     // alreadyBoarded: someone else ticked this passenger first (a second checker, or a
     // ticket shown twice). The screen warns, so a reused ticket does not pass quietly.
-    res.json({ success: true, data: { passenger: shapePassenger(updated), alreadyBoarded: boarded && changed.count === 0 } })
+    res.json({ success: true, data: { passenger: line, passengers: lines, alreadyBoarded: boarded && changed.count === 0 } })
   } catch (error) {
     console.error('SetBoarded error:', error)
     res.status(500).json({ success: false, error: 'Internal server error' })
@@ -179,7 +262,8 @@ export const unboardPassenger = (req: AuthRequest, res: Response) => setBoarded(
 
 // ─── Find a ticket by its code ───────────────────────────
 // For a code typed or scanned at the door. Says whether the ticket is usable, so the
-// checker is warned about voided tickets and tickets already used.
+// checker is warned about voided tickets and tickets already used. Returns every
+// passenger on the ticket, each with their own boarding state.
 export const lookupTicket = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const code = String(req.params.code ?? '').trim().toUpperCase()
@@ -201,12 +285,15 @@ export const lookupTicket = async (req: AuthRequest, res: Response): Promise<voi
     }
 
     const { schedule, ...rest } = booking
+    const lines = shapePassengers(rest)
+    const summary = summarize(lines)
     const valid = (BOARDABLE as readonly string[]).includes(booking.status)
     res.json({
       success: true,
       data: {
-        state: !valid ? 'VOIDED' : booking.boardedAt ? 'ALREADY_BOARDED' : 'OK',
-        passenger: shapePassenger(rest),
+        state: !valid ? 'VOIDED' : summary.boarded ? 'ALREADY_BOARDED' : 'OK',
+        passenger: summary,
+        passengers: lines,
         trip: schedule,
       },
     })

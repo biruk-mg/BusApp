@@ -7,15 +7,31 @@ import { HOLD_MINUTES, releaseExpiredHolds } from '../lib/seats'
 import { PUBLIC_OPERATOR_FIELDS } from '../lib/visibility'
 import { SaleError, validateTripForSale, lockAndCheckSeats, checkUserHoldLimit } from '../lib/sales'
 import { generateTicketCode } from '../lib/ticketCode'
+import { normalizePhone } from '../lib/phone'
 import { refundFor } from '../lib/refund'
 
 // ─── Validation ─────────────────────────────────────────
-const createBookingSchema = z.object({
+// One passenger per seat: a name each (so a seat can't be held under no name, or
+// several seats under one), and their own pickup and drop-off.
+const passengerSchema = z.object({
+  seatNumber: z.string().min(1),
+  name: z.string().trim().min(2, 'Enter every passenger\'s name').max(80, 'A passenger name is too long'),
+  phone: z.string().trim().max(30).optional(),
   pickupPointId: z.string().optional(),
   dropoffPointId: z.string().optional(),
+})
+
+const createBookingSchema = z.object({
   scheduleId: z.string(),
   seatNumbers: z.array(z.string()).min(1).max(10),
+  passengers: z.array(passengerSchema).min(1, 'Enter the details of every passenger').max(10),
 })
+
+/** What a ticket shows for each passenger: names, seats and stops (no phone numbers). */
+export const passengerInclude = {
+  orderBy: { seatNumber: 'asc' },
+  include: { pickupPoint: true, dropoffPoint: true },
+} as const
 
 // ─── Create Booking ──────────────────────────────────────
 export const createBooking = async (req: AuthRequest, res: Response): Promise<void> => {
@@ -27,11 +43,39 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
     }
 
     const { scheduleId, seatNumbers } = parsed.data
-    const pickupPointId = parsed.data.pickupPointId || undefined
-    const dropoffPointId = parsed.data.dropoffPointId || undefined
     const userId = req.userId!
 
-    const schedule = await validateTripForSale({ channel: 'ONLINE', scheduleId, seatNumbers, pickupPointId, dropoffPointId })
+    // Clean up each passenger: empty stops mean "none", phone numbers are stored in one format
+    const people: {
+      seatNumber: string
+      name: string
+      phone: string | null
+      pickupPointId: string | undefined
+      dropoffPointId: string | undefined
+    }[] = []
+    for (const p of parsed.data.passengers) {
+      let phone: string | null = null
+      if (p.phone) {
+        phone = normalizePhone(p.phone)
+        if (!phone) {
+          res.status(400).json({ success: false, error: `Enter a valid phone number for ${p.name}, like 0911223344, or leave it empty` })
+          return
+        }
+      }
+      people.push({
+        seatNumber: p.seatNumber,
+        name: p.name,
+        phone,
+        pickupPointId: p.pickupPointId || undefined,
+        dropoffPointId: p.dropoffPointId || undefined,
+      })
+    }
+
+    const schedule = await validateTripForSale({ channel: 'ONLINE', scheduleId, seatNumbers, passengers: people })
+    // The booking itself keeps the first passenger's stops, so older screens still show something sensible
+    const first = [...people].sort((a, b) => a.seatNumber.localeCompare(b.seatNumber))[0]
+    const pickupPointId = first.pickupPointId
+    const dropoffPointId = first.dropoffPointId
     const now = new Date()
 
     // Every ticket gets a short code (the same kind counter tickets have) and the
@@ -65,10 +109,20 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
               dropoffPointId: dropoffPointId ?? null,
               ticketCode,
               qrCode,
+              passengers: {
+                create: people.map((p) => ({
+                  seatNumber: p.seatNumber,
+                  name: p.name,
+                  phone: p.phone,
+                  pickupPointId: p.pickupPointId ?? null,
+                  dropoffPointId: p.dropoffPointId ?? null,
+                })),
+              },
             },
             include: {
               pickupPoint: true,
               dropoffPoint: true,
+              passengers: passengerInclude,
               schedule: {
                 include: { route: true, bus: true },
               },
@@ -108,6 +162,7 @@ export const getMyBookings = async (req: AuthRequest, res: Response): Promise<vo
     const bookings = await prisma.booking.findMany({
       where: { userId },
       include: {
+        passengers: passengerInclude,
         schedule: {
           include: { route: true, bus: { include: { operator: PUBLIC_OPERATOR_FIELDS } } },
         },
@@ -136,6 +191,7 @@ export const getBooking = async (req: AuthRequest, res: Response): Promise<void>
       include: {
         pickupPoint: true,
         dropoffPoint: true,
+        passengers: passengerInclude,
         schedule: {
           include: { route: true, bus: { include: { operator: PUBLIC_OPERATOR_FIELDS } } },
         },
@@ -169,7 +225,12 @@ export const getBooking = async (req: AuthRequest, res: Response): Promise<void>
 async function loadCancellable(req: AuthRequest) {
   const booking = await prisma.booking.findUnique({
     where: { id: req.params.id as string },
-    include: { payment: true, schedule: { select: { departureTime: true, bus: { select: { operatorId: true } } } } },
+    include: {
+      payment: true,
+      // Boarding is recorded per passenger: one boarded passenger is enough to stop a cancellation
+      passengers: { select: { boardedAt: true } },
+      schedule: { select: { departureTime: true, bus: { select: { operatorId: true } } } },
+    },
   })
   if (!booking) throw new SaleError(404, 'Booking not found')
 
@@ -183,7 +244,9 @@ async function loadCancellable(req: AuthRequest) {
   }
   if (booking.status === 'CANCELLED') throw new SaleError(400, 'Booking already cancelled')
   if (booking.status === 'COMPLETED') throw new SaleError(400, 'Cannot cancel a completed booking')
-  if (booking.boardedAt) throw new SaleError(400, 'This passenger has already boarded, so the ticket cannot be cancelled')
+  if (booking.boardedAt || booking.passengers.some((p) => p.boardedAt)) {
+    throw new SaleError(400, 'This passenger has already boarded, so the ticket cannot be cancelled')
+  }
 
   const byAdmin = isAdmin
   if (!byAdmin && booking.schedule.departureTime.getTime() <= Date.now()) {
@@ -232,8 +295,8 @@ export const cancelBooking = async (req: AuthRequest, res: Response): Promise<vo
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${first.booking.scheduleId}))`
 
       // Read again under the lock: the passenger may have boarded or paid a moment ago
-      const booking = await tx.booking.findUnique({ where: { id }, include: { payment: true } })
-      if (!booking || booking.status === 'CANCELLED' || booking.status === 'COMPLETED' || booking.boardedAt) {
+      const booking = await tx.booking.findUnique({ where: { id }, include: { payment: true, passengers: { select: { boardedAt: true } } } })
+      if (!booking || booking.status === 'CANCELLED' || booking.status === 'COMPLETED' || booking.boardedAt || booking.passengers.some((p) => p.boardedAt)) {
         throw new SaleError(409, 'This booking can no longer be cancelled')
       }
 
@@ -243,7 +306,8 @@ export const cancelBooking = async (req: AuthRequest, res: Response): Promise<vo
         : null
 
       const done = await tx.booking.updateMany({
-        where: { id, status: { in: ['PENDING', 'CONFIRMED'] }, boardedAt: null },
+        // The same check again inside the update itself, so a checker ticking someone at this moment cannot slip past
+        where: { id, status: { in: ['PENDING', 'CONFIRMED'] }, boardedAt: null, passengers: { none: { boardedAt: { not: null } } } },
         data: {
           status: 'CANCELLED',
           cancelledAt: now,

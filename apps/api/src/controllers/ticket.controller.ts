@@ -21,6 +21,15 @@ export const getPublicTicket = async (req: Request, res: Response): Promise<void
         schedule: { include: { route: true, bus: { select: { plateNumber: true, busType: true, operator: { select: { companyName: true } } } } } },
         pickupPoint: { select: { name: true, offsetMin: true } },
         dropoffPoint: { select: { name: true } },
+        passengers: {
+          orderBy: { seatNumber: 'asc' },
+          select: {
+            seatNumber: true,
+            name: true,
+            pickupPoint: { select: { name: true, offsetMin: true } },
+            dropoffPoint: { select: { name: true } },
+          },
+        },
       },
     })
     if (!booking) {
@@ -47,6 +56,8 @@ export const getPublicTicket = async (req: Request, res: Response): Promise<void
           arrivalTime: booking.schedule.arrivalTime,
           pickupPoint: booking.pickupPoint,
           dropoffPoint: booking.dropoffPoint,
+          // One entry per seat. Empty for older tickets: then the fields above apply.
+          passengers: booking.passengers,
           qrCode: await QRCode.toDataURL(code),
         },
       },

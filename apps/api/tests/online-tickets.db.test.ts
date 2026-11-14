@@ -26,6 +26,9 @@ if (TEST_URL && NORMAL_URL && TEST_URL === NORMAL_URL) {
 if (TEST_URL) process.env.DATABASE_URL = TEST_URL
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-only-for-tests'
 
+// Online bookings need a name for every seat
+const pax = (seats: string[]) => seats.map((s) => ({ seatNumber: s, name: `Test Passenger ${s}` }))
+
 type Prisma = typeof import('../src/lib/prisma').prisma
 let prisma: Prisma
 let axiosGet: ReturnType<typeof vi.fn>
@@ -76,7 +79,7 @@ let route: any, customer: { user: any; tok: string }, A: Company, B: Company, ze
 
 /** The passenger books seats, then "pays": Chapa (fake) says the payment succeeded. */
 async function bookAndPay(company: Company, seat: string) {
-  const out = await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: company.trip.id, seatNumbers: [seat] })
+  const out = await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: company.trip.id, seatNumbers: [seat], passengers: pax([seat]) })
   expect(out.status, JSON.stringify(out.body)).toBe(201)
   const booking = out.body.data.booking
   await prisma.payment.create({
@@ -129,7 +132,7 @@ describe.skipIf(!TEST_URL)('online tickets: ticket code, frozen commission, veri
   })
 
   it('gives every online booking a ticket code, and the QR holds that code', async () => {
-    const out = await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: A.trip.id, seatNumbers: ['01'] })
+    const out = await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: A.trip.id, seatNumbers: ['01'], passengers: pax(['01']) })
     expect(out.status).toBe(201)
     const { ticketCode, qrCode } = out.body.data.booking
     expect(ticketCode).toMatch(/^[A-HJ-NP-Z2-9]{8}$/)
@@ -137,7 +140,7 @@ describe.skipIf(!TEST_URL)('online tickets: ticket code, frozen commission, veri
     expect(qrCode).not.toContain(customer.user.id)
 
     // Two bookings never share a code
-    const other = await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: A.trip.id, seatNumbers: ['02'] })
+    const other = await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: A.trip.id, seatNumbers: ['02'], passengers: pax(['02']) })
     expect(other.body.data.booking.ticketCode).not.toBe(ticketCode)
   })
 
@@ -175,7 +178,7 @@ describe.skipIf(!TEST_URL)('online tickets: ticket code, frozen commission, veri
     expect(ok.status).toBe(200)
     expect(ok.body.data.state).toBe('OK')
     expect(ok.body.data.passenger).toMatchObject({ ticketCode: code })
-    expect(JSON.stringify(ok.body)).toContain('Passenger Paula')
+    expect(JSON.stringify(ok.body)).toContain('Test Passenger')
 
     // Lower case, as typed on a phone, still works (the web app also removes spaces and dashes)
     const typed = await api('GET', `/api/v1/checkin/lookup/${code.toLowerCase()}`, B.checker.tok)
@@ -186,7 +189,7 @@ describe.skipIf(!TEST_URL)('online tickets: ticket code, frozen commission, veri
   })
 
   it('does not accept the ticket of a booking that was never paid', async () => {
-    const out = await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: B.trip.id, seatNumbers: ['06'] })
+    const out = await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: B.trip.id, seatNumbers: ['06'], passengers: pax(['06']) })
     const lookup = await api('GET', `/api/v1/checkin/lookup/${out.body.data.booking.ticketCode}`, B.checker.tok)
     expect(lookup.status).toBe(200)
     expect(lookup.body.data.state).toBe('VOIDED')

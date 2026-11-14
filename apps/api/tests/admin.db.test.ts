@@ -23,6 +23,9 @@ if (TEST_URL && NORMAL_URL && TEST_URL === NORMAL_URL) {
 if (TEST_URL) process.env.DATABASE_URL = TEST_URL
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-only-for-tests'
 
+// Online bookings need a name for every seat
+const pax = (seats: string[]) => seats.map((s) => ({ seatNumber: s, name: `Test Passenger ${s}` }))
+
 type Prisma = typeof import('../src/lib/prisma').prisma
 let prisma: Prisma
 let server: http.Server
@@ -270,7 +273,7 @@ describe.skipIf(!TEST_URL)('platform administration (database, real routes)', ()
     await prisma.user.update({ where: { id: co.manager.user.id }, data: { password: await bcrypt.hash('susp-pass1', 4) } })
     const trip = await newTrip(co)
     expect(await searchFor(trip.departureTime)).toContain(trip.id)
-    expect((await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: ['01'] })).status).toBe(201)
+    expect((await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: ['01'], passengers: pax(['01']) })).status).toBe(201)
 
     expect((await api('POST', `/api/v1/admin/operators/${co.operator.id}/suspend`, admin.tok, {})).status).toBe(400) // reason needed
     const s = await api('POST', `/api/v1/admin/operators/${co.operator.id}/suspend`, admin.tok, { reason: 'License expired' })
@@ -296,7 +299,7 @@ describe.skipIf(!TEST_URL)('platform administration (database, real routes)', ()
     expect(await searchFor(trip.departureTime)).not.toContain(trip.id)
     const list = await api('GET', '/api/v1/schedules')
     expect(list.body.data.schedules.map((x: any) => x.id)).not.toContain(trip.id)
-    const refused = await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: ['02'] })
+    const refused = await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: ['02'], passengers: pax(['02']) })
     expect(refused.status).toBe(409)
     expect(refused.body.error).toMatch(/not taking bookings/i)
     expect((await api('GET', `/api/v1/schedules/${trip.id}`)).body.data.schedule.bookable).toBe(false)
@@ -314,7 +317,7 @@ describe.skipIf(!TEST_URL)('platform administration (database, real routes)', ()
     expect((await api('POST', `/api/v1/admin/operators/${co.operator.id}/reactivate`, admin.tok)).status).toBe(409)
     expect(await searchFor(trip.departureTime)).toContain(trip.id)
     expect((await api('GET', '/api/v1/operator/buses', co.manager.tok)).status).toBe(200)
-    expect((await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: ['03'] })).status).toBe(201)
+    expect((await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: ['03'], passengers: pax(['03']) })).status).toBe(201)
   })
 
   it('blocks counter sales for a suspended company even if the seller got past the staff check', async () => {
@@ -339,7 +342,7 @@ describe.skipIf(!TEST_URL)('platform administration (database, real routes)', ()
     const trip = await newTrip(co)
     expect(await searchFor(trip.departureTime)).not.toContain(trip.id)
     expect((await api('GET', '/api/v1/schedules')).body.data.schedules.map((x: any) => x.id)).not.toContain(trip.id)
-    const online = await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: ['01'] })
+    const online = await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: ['01'], passengers: pax(['01']) })
     expect(online.status).toBe(409)
     expect(online.body.error).toMatch(/demo/i)
     expect((await api('GET', `/api/v1/schedules/${trip.id}`)).body.data.schedule.bookable).toBe(false)
@@ -353,7 +356,7 @@ describe.skipIf(!TEST_URL)('platform administration (database, real routes)', ()
     // Switching the flag off makes it a normal company again
     await api('PATCH', `/api/v1/admin/operators/${co.operator.id}`, admin.tok, { isDemo: false })
     expect(await searchFor(trip.departureTime)).toContain(trip.id)
-    expect((await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: ['02'] })).status).toBe(201)
+    expect((await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: ['02'], passengers: pax(['02']) })).status).toBe(201)
   })
 
   // ─── Passwords ──────────────────────────────────────────
@@ -410,7 +413,7 @@ describe.skipIf(!TEST_URL)('platform administration (database, real routes)', ()
       scheduleId: demoTrip.id, seatNumbers: ['01'], passengerName: 'Demo Walker', passengerPhone: newPhone(), method: 'CASH',
     })
     // An online confirmed booking
-    const online = await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: realTrip.id, seatNumbers: ['05'] })
+    const online = await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: realTrip.id, seatNumbers: ['05'], passengers: pax(['05']) })
     await prisma.booking.update({ where: { id: online.body.data.booking.id }, data: { status: 'CONFIRMED' } })
 
     const after = (await api('GET', '/api/v1/admin/dashboard', admin.tok)).body.data

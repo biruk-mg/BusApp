@@ -162,6 +162,17 @@ export const createCounterSale = async (req: AuthRequest, res: Response): Promis
               pickupPointId: pickupPointId ?? null,
               dropoffPointId: dropoffPointId ?? null,
               qrCode,
+              // One passenger row per seat, so boarding is per passenger for counter
+              // tickets too. For now every seat carries the buyer's name and phone.
+              passengers: {
+                create: seatNumbers.map((seatNumber) => ({
+                  seatNumber,
+                  name: input.passengerName,
+                  phone,
+                  pickupPointId: pickupPointId ?? null,
+                  dropoffPointId: dropoffPointId ?? null,
+                })),
+              },
               payment: { create: { amount: totalPrice, method, reference, status: 'SUCCESS' } },
             },
             include: counterBookingInclude,

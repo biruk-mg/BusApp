@@ -19,6 +19,9 @@ if (TEST_URL && NORMAL_URL && TEST_URL === NORMAL_URL) {
 }
 if (TEST_URL) process.env.DATABASE_URL = TEST_URL
 
+// Online bookings need a name for every seat
+const pax = (seats: string[]) => seats.map((s) => ({ seatNumber: s, name: `Test Passenger ${s}` }))
+
 type Prisma = typeof import('../src/lib/prisma').prisma
 let prisma: Prisma
 let lib: typeof import('../src/lib/recurring')
@@ -218,7 +221,7 @@ describe.skipIf(!TEST_URL)('recurring schedules (database)', () => {
     })
     await prisma.schedule.update({ where: { id: trip.id }, data: { status: 'CLOSED' } })
     const rejected = await call(bookCtl.createBooking, {
-      userId: customer.id, body: { scheduleId: trip.id, seatNumbers: ['01'] },
+      userId: customer.id, body: { scheduleId: trip.id, seatNumbers: ['01'], passengers: pax(['01']) },
     })
     expect(rejected.status).toBe(409)
     expect(rejected.body.error).toMatch(/closed/i)
@@ -226,7 +229,7 @@ describe.skipIf(!TEST_URL)('recurring schedules (database)', () => {
 
     await prisma.schedule.update({ where: { id: trip.id }, data: { status: 'OPEN' } })
     const accepted = await call(bookCtl.createBooking, {
-      userId: customer.id, body: { scheduleId: trip.id, seatNumbers: ['01'] },
+      userId: customer.id, body: { scheduleId: trip.id, seatNumbers: ['01'], passengers: pax(['01']) },
     })
     expect(accepted.status).toBe(201)
   })
@@ -309,7 +312,7 @@ describe.skipIf(!TEST_URL)('recurring schedules (database)', () => {
 
     // Book one trip
     const booked = trips[3]
-    const b = await call(bookCtl.createBooking, { userId: customer.id, body: { scheduleId: booked.id, seatNumbers: ['02'] } })
+    const b = await call(bookCtl.createBooking, { userId: customer.id, body: { scheduleId: booked.id, seatNumbers: ['02'], passengers: pax(['02']) } })
     expect(b.status).toBe(201)
 
     const paused = await call(tplCtl.setTemplateActive, {

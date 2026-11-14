@@ -11,8 +11,16 @@ export interface CheckinTrip {
   boardedSeats: number
 }
 
+/**
+ * One line of the boarding list: one passenger, one seat. A ticket for three people is
+ * three lines with the same ticketCode, each with its own name, stops and tick.
+ * (A ticket from before passengers were recorded is one line for the whole booking.)
+ */
 export interface Passenger {
   id: string
+  bookingId: string
+  // How many passengers the ticket has
+  groupSize: number
   scheduleId: string
   source: 'ONLINE' | 'COUNTER'
   name: string
@@ -36,7 +44,10 @@ export interface TripDetail {
 
 export interface Lookup {
   state: 'OK' | 'ALREADY_BOARDED' | 'VOIDED'
+  // The whole ticket as one line (name "Abebe +2", all the seats) ...
   passenger: Passenger
+  // ... and each passenger on it
+  passengers: Passenger[]
   trip: { id: string; departureTime: string; route: { fromCity: string; toCity: string }; bus: { plateNumber: string } }
 }
 

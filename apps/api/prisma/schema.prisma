@@ -170,10 +170,42 @@ model Booking {
   boardedByStaffId String?
   boardedByStaff   OperatorStaff? @relation("StaffBoardings", fields: [boardedByStaffId], references: [id], onDelete: Restrict)
 
+  // One row per seat: who sits there and where they get on / off.
+  // Bookings made before this existed have none: the booking-level fields apply.
+  passengers BookingPassenger[]
+
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
   @@index([soldByStaffId, createdAt])
+}
+
+// One passenger on a booking, one seat each. Names and pickup / drop-off points are
+// per passenger, so a ticket for 3 people can have 3 names and 3 different stops.
+// Boarding is per passenger too.
+model BookingPassenger {
+  id         String  @id @default(cuid())
+  bookingId  String
+  booking    Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  seatNumber String
+  name       String
+  phone      String?
+
+  pickupPointId  String?
+  pickupPoint    PickupPoint? @relation("PassengerPickup", fields: [pickupPointId], references: [id], onDelete: Restrict)
+  dropoffPointId String?
+  dropoffPoint   PickupPoint? @relation("PassengerDropoff", fields: [dropoffPointId], references: [id], onDelete: Restrict)
+
+  // Set by the ticket checker when this passenger gets on the bus
+  boardedAt        DateTime?
+  boardedByStaffId String?
+  boardedByStaff   OperatorStaff? @relation("StaffPassengerBoardings", fields: [boardedByStaffId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now())
+
+  @@unique([bookingId, seatNumber])
+  @@index([pickupPointId])
+  @@index([dropoffPointId])
 }
 
 enum BookingSource {
@@ -266,6 +298,8 @@ model PickupPoint {
 
   pickupBookings  Booking[] @relation("BookingPickup")
   dropoffBookings Booking[] @relation("BookingDropoff")
+  pickupPassengers  BookingPassenger[] @relation("PassengerPickup")
+  dropoffPassengers BookingPassenger[] @relation("PassengerDropoff")
 
   @@unique([operatorId, routeId, name])
   @@index([operatorId, routeId])
@@ -294,6 +328,7 @@ model OperatorStaff {
   sales      Booking[] @relation("StaffSales")
   voids      Booking[] @relation("StaffVoids")
   boardings  Booking[] @relation("StaffBoardings")
+  passengerBoardings BookingPassenger[] @relation("StaffPassengerBoardings")
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 

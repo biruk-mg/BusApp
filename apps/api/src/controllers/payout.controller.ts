@@ -245,18 +245,18 @@ export const recordRefund = async (req: AuthRequest, res: Response): Promise<voi
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'payout:' + first.schedule.bus.operatorId}))`
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${first.scheduleId}))`
 
-      const booking = await tx.booking.findUnique({ where: { id: bookingId }, include: { payment: true } })
+      const booking = await tx.booking.findUnique({ where: { id: bookingId }, include: { payment: true, passengers: { select: { boardedAt: true } } } })
       if (!booking) throw new RuleError(404, 'Booking not found')
       if (booking.source !== 'ONLINE') throw new RuleError(409, 'Only online payments are refunded here. Counter sales are handled at the counter.')
       const payment = booking.payment
       if (!payment || payment.status !== 'SUCCESS') throw new RuleError(409, 'There is no successful online payment to refund')
       if (payment.refundedAt) throw new RuleError(409, 'This payment is already marked as refunded')
-      if (booking.boardedAt) throw new RuleError(409, 'This passenger has already boarded, so the ticket cannot be refunded')
+      if (booking.boardedAt || booking.passengers.some((p) => p.boardedAt)) throw new RuleError(409, 'This passenger has already boarded, so the ticket cannot be refunded')
       if (booking.refundAmount === 0) throw new RuleError(409, 'The Refund Policy gives nothing back for this cancellation, so there is no refund to record')
 
       // A paid ticket that is refunded can no longer be used, and its seats are free again
       if (booking.status === 'CONFIRMED' || booking.status === 'COMPLETED') {
-        const cancelled = await tx.booking.updateMany({ where: { id: bookingId, boardedAt: null }, data: { status: 'CANCELLED', cancelledAt: new Date(), refundPercent: 100, refundAmount: booking.totalPrice } })
+        const cancelled = await tx.booking.updateMany({ where: { id: bookingId, boardedAt: null, passengers: { none: { boardedAt: { not: null } } } }, data: { status: 'CANCELLED', cancelledAt: new Date(), refundPercent: 100, refundAmount: booking.totalPrice } })
         if (cancelled.count === 0) throw new RuleError(409, 'This passenger has already boarded, so the ticket cannot be refunded')
       }
       await tx.payment.update({

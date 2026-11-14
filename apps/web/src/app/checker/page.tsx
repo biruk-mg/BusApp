@@ -225,8 +225,9 @@ function PassengerList({ tripId, onBack, onOpenOtherTrip }: {
     setQuery(scanned)
   }
 
-  // A whole ticket code that is on this trip's list: say clearly whether it is good to board
-  const matched = TICKET_CODE_RE.test(code) ? passengers.find((p) => p.ticketCode === code) ?? null : null
+  // A whole ticket code that is on this trip's list: say clearly whether it is good to board.
+  // A ticket can carry several passengers, each ticked on their own.
+  const matched = TICKET_CODE_RE.test(code) ? passengers.filter((p) => p.ticketCode === code) : []
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -313,8 +314,12 @@ function PassengerList({ tripId, onBack, onOpenOtherTrip }: {
 
       {scanning && <QrScanner onScan={onScan} onClose={() => setScanning(false)} />}
 
-      {matched && (
-        <MatchNotice p={matched} busy={busy.has(matched.id)} onBoard={() => setBoarded(matched.id, true)} />
+      {matched.length > 0 && (
+        <MatchNotice
+          lines={matched} busy={(id) => busy.has(id)}
+          onBoard={(id) => setBoarded(id, true)}
+          onBoardAll={() => matched.filter((p) => !p.boarded).forEach((p) => setBoarded(p.id, true))}
+        />
       )}
 
       {lookingUp && <p style={{ color: '#999', fontSize: '13px' }}>Looking for that ticket...</p>}
@@ -382,6 +387,7 @@ function PassengerRow({ p, saving, unsaved, onToggle }: {
           <span style={{ display: 'block', fontSize: '12px', color: '#777', marginTop: '3px' }}>
             Seat {p.seatNumbers.join(', ')}
             {p.dropoffPoint ? ` · gets off at ${p.dropoffPoint}` : ''}
+            {p.groupSize > 1 ? ` · ticket of ${p.groupSize}` : ''}
             {p.source === 'ONLINE' ? ' · online' : ''}
             {unsaved ? ' · not saved yet' : p.boarded && p.boardedBy ? ` · ticked by ${p.boardedBy}` : ''}
           </span>
@@ -397,26 +403,50 @@ function PassengerRow({ p, saving, unsaved, onToggle }: {
   )
 }
 
-/** Shown when a typed ticket code is not on this trip's list. */
-function MatchNotice({ p, busy, onBoard }: { p: Passenger; busy: boolean; onBoard: () => void }) {
-  const used = p.boarded
+/** Shown when a typed or scanned ticket code is on this trip's list: every passenger on that ticket. */
+function MatchNotice({ lines, busy, onBoard, onBoardAll }: {
+  lines: Passenger[]; busy: (id: string) => boolean; onBoard: (id: string) => void; onBoardAll: () => void
+}) {
+  const waiting = lines.filter((p) => !p.boarded)
+  const used = waiting.length === 0
+  const first = lines[0]
   return (
     <div style={{ ...card, background: used ? '#FFF4E5' : '#F0FFF4', border: `1px solid ${used ? '#F0D58C' : '#BFE5CC'}` }}>
-      <div style={{ fontSize: '13px', fontWeight: 700, color: used ? '#B7791F' : '#2E8B57', marginBottom: '4px' }}>
+      <div style={{ fontSize: '13px', fontWeight: 700, color: used ? '#B7791F' : '#2E8B57', marginBottom: '8px' }}>
         {used ? '⚠️ ALREADY BOARDED' : '✅ VALID TICKET'}
+        {lines.length > 1 && <span style={{ fontWeight: 400, color: '#777' }}> · {lines.length} passengers, {lines.length - waiting.length} on board</span>}
       </div>
-      <div style={{ fontSize: '18px', fontWeight: 700, color: '#1a1a1a', overflowWrap: 'anywhere' }}>{p.name}</div>
-      <div style={{ fontSize: '14px', color: '#555', marginTop: '2px' }}>
-        Seat {p.seatNumbers.join(', ')}{p.pickupPoint ? ` · ${p.pickupPoint.name}` : ''}
-      </div>
-      {used ? (
-        <div style={{ fontSize: '13px', color: '#B7791F', marginTop: '8px' }}>
-          Ticked{p.boardedAt ? ` at ${formatTime(p.boardedAt)}` : ''}{p.boardedBy ? ` by ${p.boardedBy}` : ''}. If someone else is showing this ticket, do not let them on.
+
+      {lines.map((p) => (
+        <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 0', borderTop: '1px solid rgba(0,0,0,0.06)' }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: '17px', fontWeight: 700, color: '#1a1a1a', overflowWrap: 'anywhere' }}>{p.name}</div>
+            <div style={{ fontSize: '13px', color: '#555', marginTop: '2px' }}>
+              Seat {p.seatNumbers.join(', ')}{p.pickupPoint ? ` · ${p.pickupPoint.name}` : ''}
+            </div>
+            {p.boarded && (
+              <div style={{ fontSize: '12px', color: '#B7791F', marginTop: '3px' }}>
+                Ticked{p.boardedAt ? ` at ${formatTime(p.boardedAt)}` : ''}{p.boardedBy ? ` by ${p.boardedBy}` : ''}
+              </div>
+            )}
+          </div>
+          {!p.boarded && (
+            <button onClick={() => onBoard(p.id)} disabled={busy(p.id)}
+              style={{ background: '#2E8B57', color: 'white', border: 'none', borderRadius: '10px', padding: '12px 16px', fontSize: '15px', fontWeight: 700, cursor: busy(p.id) ? 'not-allowed' : 'pointer', opacity: busy(p.id) ? 0.6 : 1, flexShrink: 0 }}>
+              Board
+            </button>
+          )}
         </div>
-      ) : (
-        <button onClick={onBoard} disabled={busy}
-          style={{ marginTop: '12px', width: '100%', background: '#2E8B57', color: 'white', border: 'none', borderRadius: '12px', padding: '14px', fontSize: '16px', fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.6 : 1 }}>
-          Board {p.name}
+      ))}
+
+      {used ? (
+        <div style={{ fontSize: '13px', color: '#B7791F', marginTop: '6px' }}>
+          Everyone on this ticket is already ticked as boarded. If someone else is showing {lines.length > 1 ? 'it' : `this ticket (${first.name})`}, do not let them on.
+        </div>
+      ) : waiting.length > 1 && (
+        <button onClick={onBoardAll} disabled={waiting.some((p) => busy(p.id))}
+          style={{ marginTop: '10px', width: '100%', background: '#2E8B57', color: 'white', border: 'none', borderRadius: '12px', padding: '14px', fontSize: '16px', fontWeight: 700, cursor: 'pointer' }}>
+          Board all {waiting.length}
         </button>
       )}
     </div>

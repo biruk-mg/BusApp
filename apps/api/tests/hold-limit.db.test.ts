@@ -22,6 +22,9 @@ if (TEST_URL && NORMAL_URL && TEST_URL === NORMAL_URL) {
 if (TEST_URL) process.env.DATABASE_URL = TEST_URL
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-only-for-tests'
 
+// Online bookings need a name for every seat
+const pax = (seats: string[]) => seats.map((s) => ({ seatNumber: s, name: `Test Passenger ${s}` }))
+
 type Prisma = typeof import('../src/lib/prisma').prisma
 let prisma: Prisma
 let server: http.Server
@@ -57,7 +60,7 @@ let trips: { id: string }[] = []
 
 /** A passenger asks for seats on trip number `n` (0, 1, 2...). */
 const book = (tok: string, n: number, seatNumbers: string[]) =>
-  api('POST', '/api/v1/bookings', tok, { scheduleId: trips[n].id, seatNumbers })
+  api('POST', '/api/v1/bookings', tok, { scheduleId: trips[n].id, seatNumbers, passengers: pax(seatNumbers) })
 
 describe.skipIf(!TEST_URL)('unpaid seats limit (database, real routes)', () => {
   beforeAll(async () => {
