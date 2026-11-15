@@ -9,6 +9,8 @@ import { SaleError, validateTripForSale, lockAndCheckSeats, checkUserHoldLimit }
 import { generateTicketCode } from '../lib/ticketCode'
 import { normalizePhone } from '../lib/phone'
 import { refundFor } from '../lib/refund'
+import { ratingState } from '../lib/ratings'
+import { ownRating } from './rating.controller'
 
 // ─── Validation ─────────────────────────────────────────
 // One passenger per seat: a name each (so a seat can't be held under no name, or
@@ -152,6 +154,20 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
   }
 }
 
+
+/**
+ * A booking as the passenger sees it with their rating: what they gave (if anything) and
+ * whether they can rate or change it right now. Only the booker can rate, never an admin.
+ */
+function withRating<T extends { userId: string | null; status: string; schedule: { departureTime: Date }; rating: Parameters<typeof ownRating>[0] | null }>(
+  booking: T,
+  viewerId: string
+) {
+  const state = booking.userId === viewerId ? ratingState(booking) : { canRate: false, canEdit: false }
+  const { rating, ...rest } = booking
+  return { ...rest, rating: rating ? ownRating(rating) : null, canRate: state.canRate, canEditRating: state.canEdit }
+}
+
 // ─── Get My Bookings ─────────────────────────────────────
 export const getMyBookings = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
@@ -167,11 +183,13 @@ export const getMyBookings = async (req: AuthRequest, res: Response): Promise<vo
           include: { route: true, bus: { include: { operator: PUBLIC_OPERATOR_FIELDS } } },
         },
         payment: true,
+        rating: true,
       },
       orderBy: { createdAt: 'desc' },
     })
 
-    res.json({ success: true, data: { bookings, total: bookings.length } })
+    const withRatings = bookings.map((b) => withRating(b, userId))
+    res.json({ success: true, data: { bookings: withRatings, total: withRatings.length } })
   } catch (error) {
     console.error('GetMyBookings error:', error)
     res.status(500).json({ success: false, error: 'Internal server error' })
@@ -196,6 +214,7 @@ export const getBooking = async (req: AuthRequest, res: Response): Promise<void>
           include: { route: true, bus: { include: { operator: PUBLIC_OPERATOR_FIELDS } } },
         },
         payment: true,
+        rating: true,
       },
     })
 
@@ -210,7 +229,7 @@ export const getBooking = async (req: AuthRequest, res: Response): Promise<void>
       return
     }
 
-    res.json({ success: true, data: { booking } })
+    res.json({ success: true, data: { booking: withRating(booking, userId) } })
   } catch (error) {
     console.error('GetBooking error:', error)
     res.status(500).json({ success: false, error: 'Internal server error' })

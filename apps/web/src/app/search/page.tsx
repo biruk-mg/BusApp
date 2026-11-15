@@ -7,6 +7,7 @@ import { api } from '@/lib/api'
 import Navbar from '@/components/Navbar'
 import { Clock, MapPin, Users, ArrowRight, Bus } from 'lucide-react'
 import { useI18n } from '@/i18n/LanguageProvider'
+import { RatingBadge } from '@/components/Stars'
 
 interface ScheduleResult {
   id: string
@@ -16,7 +17,7 @@ interface ScheduleResult {
   availableSeats: number
   totalSeats: number
   route: { fromCity: string; toCity: string; estimatedDurationMin: number }
-  bus: { plateNumber: string; totalSeats: number; busType: string; operator: { companyName: string } }
+  bus: { plateNumber: string; totalSeats: number; busType: string; operator: { companyName: string; rating?: { average: number; count: number } | null } }
 }
 
 function SearchResults() {
@@ -266,6 +267,7 @@ function SearchResults() {
                   <span style={{ background: '#FEF2F2', color: '#C0392B', fontSize: '11px', fontWeight: 600, padding: '4px 12px', borderRadius: '20px' }}>
                     {schedule.bus.operator.companyName}
                   </span>
+                  <RatingBadge rating={schedule.bus.operator.rating} />
                   <span style={{ fontSize: '12px', color: '#bbb' }}>•</span>
                   <span style={{ fontSize: '12px', color: '#999' }}>{schedule.bus.plateNumber}</span>
                   <span style={{ fontSize: '12px', color: '#bbb' }}>•</span>

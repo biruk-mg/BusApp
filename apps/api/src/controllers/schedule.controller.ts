@@ -8,6 +8,7 @@ import { activeBookingFilter, releaseExpiredHolds } from '../lib/seats'
 import { addisDayRange, isValidDateString } from '../lib/time'
 import { maybeTopUp } from '../lib/recurring'
 import { PUBLIC_OPERATOR, PUBLIC_OPERATOR_FIELDS, isAdminRequest } from '../lib/visibility'
+import { publicRatingSummaries, withPublicRating } from '../lib/ratings'
 
 const createScheduleSchema = z.object({
   routeId: z.string(),
@@ -87,10 +88,12 @@ export const searchSchedules = async (req: Request, res: Response): Promise<void
       take: 100,
     })
 
+    const summaries = await publicRatingSummaries(schedules.map((s) => s.bus.operatorId))
     const schedulesWithAvailability = schedules.map(({ bookings, ...schedule }) => {
       const bookedSeats = bookings.reduce((n, b) => n + b.seatNumbers.length, 0)
       return {
         ...schedule,
+        bus: { ...schedule.bus, operator: withPublicRating(schedule.bus.operator, summaries) },
         availableSeats: Math.max(0, schedule.bus.totalSeats - bookedSeats),
         totalSeats: schedule.bus.totalSeats,
       }
@@ -127,7 +130,9 @@ export const getAllSchedules = async (req: Request, res: Response): Promise<void
       },
       orderBy: { departureTime: 'asc' },
     })
-    res.json({ success: true, data: { schedules, total: schedules.length } })
+    const summaries = await publicRatingSummaries(schedules.map((s) => s.bus.operatorId))
+    const withRatings = schedules.map((s) => ({ ...s, bus: { ...s.bus, operator: withPublicRating(s.bus.operator, summaries) } }))
+    res.json({ success: true, data: { schedules: withRatings, total: withRatings.length } })
   } catch (error) {
     console.error('GetAllSchedules error:', error)
     res.status(500).json({ success: false, error: 'Internal server error' })
@@ -155,6 +160,7 @@ export const getScheduleById = async (req: Request, res: Response): Promise<void
     const { bookings, ...rest } = schedule
     const booked = bookings.reduce((n, b) => n + b.seatNumbers.length, 0)
     const company = schedule.bus.operator
+    const summaries = await publicRatingSummaries([company.id])
     res.json({
       success: true,
       data: {
@@ -163,7 +169,7 @@ export const getScheduleById = async (req: Request, res: Response): Promise<void
           // Only the public company fields: never the commission rate or notes
           bus: {
             ...rest.bus,
-            operator: { id: company.id, companyName: company.companyName, licenseNo: company.licenseNo, phone: company.phone },
+            operator: withPublicRating({ id: company.id, companyName: company.companyName, licenseNo: company.licenseNo, phone: company.phone }, summaries),
           },
           availableSeats: Math.max(0, schedule.bus.totalSeats - booked),
           totalSeats: schedule.bus.totalSeats,

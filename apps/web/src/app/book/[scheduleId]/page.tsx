@@ -8,6 +8,7 @@ import Navbar from '@/components/Navbar'
 import toast from 'react-hot-toast'
 import { formatTime, formatPrice, generateSeatMap } from '@bus/utils'
 import { MapPin, Clock, ArrowRight } from 'lucide-react'
+import { RatingBadge } from '@/components/Stars'
 
 interface ScheduleDetail {
   id: string
@@ -15,7 +16,7 @@ interface ScheduleDetail {
   departureTime: string
   arrivalTime: string
   route: { fromCity: string; toCity: string; estimatedDurationMin: number }
-  bus: { totalSeats: number; busType: string; plateNumber: string; operator: { id: string; companyName: string } }
+  bus: { totalSeats: number; busType: string; plateNumber: string; operator: { id: string; companyName: string; rating?: { average: number; count: number } | null } }
   availableSeats: number
   status: 'OPEN' | 'CLOSED'
   // false when the company is suspended or a demo company
@@ -295,6 +296,12 @@ export default function BookPage() {
             {departures.length > 0 && ' Please choose another departure below.'}
           </div>
         )}
+
+        {/* Who runs this bus, with its rating (shown once it has enough ratings) */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px', fontSize: '13px', color: '#666' }}>
+          <span style={{ fontWeight: 600, color: '#1a1a1a' }}>{schedule.bus.operator.companyName}</span>
+          <RatingBadge rating={schedule.bus.operator.rating} />
+        </div>
 
         {/* Other departures of this operator today */}
         {departures.length > 1 && (

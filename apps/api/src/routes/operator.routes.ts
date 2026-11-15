@@ -29,6 +29,7 @@ import {
 } from '../controllers/staff.controller'
 import { getMyEarnings } from '../controllers/payout.controller'
 import { getMySales } from '../controllers/sales.controller'
+import { getMyRatings } from '../controllers/rating.controller'
 import { authenticate } from '../middleware/auth'
 import { requireManager, requireStaff } from '../middleware/staff'
 
@@ -44,6 +45,7 @@ router.post('/buses', ...managerOnly, createBus)
 router.get('/bookings', ...managerOnly, getOperatorBookings)
 router.get('/earnings', ...managerOnly, getMyEarnings)
 router.get('/sales', ...managerOnly, getMySales)
+router.get('/ratings', ...managerOnly, getMyRatings)
 router.get('/stats', ...managerOnly, getOperatorStats)
 router.get('/analytics', ...managerOnly, getRevenueAnalytics)
 router.get('/availability', ...managerOnly, getScheduleAvailability)

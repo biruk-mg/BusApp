@@ -19,6 +19,7 @@ import {
   recordRefund,
 } from '../controllers/payout.controller'
 import { listSales, getCompanySales } from '../controllers/sales.controller'
+import { listRatings, hideRatingComment, unhideRatingComment } from '../controllers/rating.controller'
 import express from 'express'
 import type { ErrorRequestHandler } from 'express'
 import { listBanners, createBanner, updateBanner, deleteBanner, setBannerImage, deleteBannerImage, MAX_IMAGE_BYTES } from '../controllers/banner.controller'
@@ -51,6 +52,11 @@ router.get('/operators/:id/earnings', ...admin, getCompanyEarnings)
 router.post('/operators/:id/payouts', ...admin, createPayout)
 router.post('/payouts/:id/void', ...admin, voidPayout)
 router.post('/bookings/:id/refund', ...admin, recordRefund)
+
+// Ratings: every rating, and hiding an abusive comment (the stars still count)
+router.get('/ratings', ...admin, listRatings)
+router.post('/ratings/:id/hide', ...admin, hideRatingComment)
+router.post('/ratings/:id/unhide', ...admin, unhideRatingComment)
 
 // Offers shown on the home page
 router.get('/banners', ...admin, listBanners)

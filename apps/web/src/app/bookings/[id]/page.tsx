@@ -6,6 +6,8 @@ import { api } from '@/lib/api'
 import Navbar from '@/components/Navbar'
 import { formatDate, formatTime, formatPrice } from '@bus/utils'
 import { Bus, MapPin, Calendar, ArrowRight, Clock } from 'lucide-react'
+import RatingBox from '@/components/RatingBox'
+import type { OwnRating } from '@/lib/ratings'
 import toast from 'react-hot-toast'
 
 interface BookingDetail {
@@ -21,6 +23,10 @@ interface BookingDetail {
   payment?: { status: string } | null
   source?: 'ONLINE' | 'COUNTER'
   ticketCode?: string | null
+  // The passenger's rating of this trip, and whether they can give or change it now
+  rating?: OwnRating | null
+  canRate?: boolean
+  canEditRating?: boolean
   pickupPoint?: { name: string; offsetMin: number } | null
   dropoffPoint?: { name: string } | null
   // One entry per seat. Empty for older bookings: then the stops above apply.
@@ -334,6 +340,15 @@ export default function BookingDetailPage() {
             )}
           </div>
         </div>
+
+        <RatingBox
+          key={`${booking.rating?.id ?? 'none'}-${booking.rating?.stars ?? 0}-${booking.canRate ? 1 : 0}`}
+          bookingId={booking.id}
+          rating={booking.rating ?? null}
+          canRate={!!booking.canRate}
+          canEdit={!!booking.canEditRating}
+          onSaved={() => { loadBooking() }}
+        />
 
         {/* Actions */}
         <div className="ticket-actions" style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>

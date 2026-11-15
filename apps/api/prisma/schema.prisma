@@ -14,6 +14,7 @@ model User {
   password  String
   role      Role     @default(CUSTOMER)
   bookings  Booking[]
+  ratings   Rating[]
   staff     OperatorStaff?
 
   // Login sessions. Every login token carries this number; changing or resetting the
@@ -48,6 +49,7 @@ model Operator {
   commissionPercent Float        @default(5)
   notes           String?
   payouts         Payout[]
+  ratings         Rating[]
 
   createdAt   DateTime @default(now())
 }
@@ -66,6 +68,7 @@ model Bus {
   busType     BusType    @default(STANDARD)
   schedules   Schedule[]
   templates   ScheduleTemplate[]
+  ratings     Rating[]
   createdAt   DateTime   @default(now())
 }
 
@@ -182,6 +185,9 @@ model Booking {
   // One row per seat: who sits there and where they get on / off.
   // Bookings made before this existed have none: the booking-level fields apply.
   passengers BookingPassenger[]
+
+  // The passenger's rating of this trip (at most one)
+  rating Rating?
 
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
@@ -403,4 +409,33 @@ model Banner {
   endsAt    DateTime?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
+}
+
+// A passenger's rating of one trip. The stars belong to the bus company (shown on search
+// results once it has enough of them); the bus is kept so only the owner and the admin
+// can see how each bus does. The admin can hide a comment: the stars still count.
+model Rating {
+  id         String   @id @default(cuid())
+  bookingId  String   @unique
+  booking    Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  operatorId String
+  operator   Operator @relation(fields: [operatorId], references: [id], onDelete: Restrict)
+  busId      String
+  bus        Bus      @relation(fields: [busId], references: [id], onDelete: Restrict)
+
+  stars   Int
+  comment String?
+
+  // Set by the admin for an abusive comment: the comment is no longer shown to the
+  // company, but the stars still count.
+  commentHiddenAt     DateTime?
+  commentHiddenReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([operatorId, createdAt])
+  @@index([busId])
 }

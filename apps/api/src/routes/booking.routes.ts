@@ -7,6 +7,7 @@ import {
   getRefundPreview,
   getAllBookings,
 } from '../controllers/booking.controller'
+import { rateBooking } from '../controllers/rating.controller'
 import { authenticate, authorizeAdmin } from '../middleware/auth'
 
 const router: IRouter = Router()
@@ -17,6 +18,7 @@ router.get('/my', authenticate, getMyBookings)
 router.get('/:id', authenticate, getBooking)
 router.get('/:id/refund-preview', authenticate, getRefundPreview)
 router.patch('/:id/cancel', authenticate, cancelBooking)
+router.put('/:id/rating', authenticate, rateBooking)
 
 // Admin only
 router.get('/', authenticate, authorizeAdmin, getAllBookings)

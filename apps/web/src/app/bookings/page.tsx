@@ -7,6 +7,7 @@ import { useAuthStore } from '@/store/auth.store'
 import Navbar from '@/components/Navbar'
 import { formatDate, formatTime, formatPrice } from '@bus/utils'
 import { Bus, Calendar, MapPin, Ticket, ArrowRight } from 'lucide-react'
+import { Stars } from '@/components/Stars'
 
 interface Booking {
   id: string
@@ -14,6 +15,8 @@ interface Booking {
   totalPrice: number
   status: string
   createdAt: string
+  rating?: { stars: number } | null
+  canRate?: boolean
   schedule: {
     departureTime: string
     arrivalTime: string
@@ -152,9 +155,16 @@ export default function BookingsPage() {
                     </span>
                     <span style={{ fontSize: '12px', color: '#bbb' }}>{booking.schedule.bus.plateNumber}</span>
                   </div>
-                  <span style={{ fontSize: '18px', fontWeight: 700, color: '#C0392B' }}>
-                    {formatPrice(booking.totalPrice)}
-                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                    {booking.rating ? (
+                      <Stars value={booking.rating.stars} size={14} />
+                    ) : booking.canRate ? (
+                      <span style={{ fontSize: '12px', fontWeight: 600, color: '#8A6500', background: '#FFFBEB', padding: '4px 10px', borderRadius: '20px' }}>★ Rate this trip</span>
+                    ) : null}
+                    <span style={{ fontSize: '18px', fontWeight: 700, color: '#C0392B' }}>
+                      {formatPrice(booking.totalPrice)}
+                    </span>
+                  </div>
                 </div>
               </div>
             )
