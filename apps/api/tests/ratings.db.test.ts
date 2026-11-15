@@ -72,18 +72,35 @@ type Company = Awaited<ReturnType<typeof makeCompany>>
 
 let route: any, A: Company, B: Company
 
-/** A booking made by `userId` on a trip that left `hoursAgo` hours ago (negative = still to come). */
+/**
+ * A booking made by `userId` on a trip that left `hoursAgo` hours ago (negative = still to come).
+ * Unless `boarded: false`, the checker has marked the passenger as boarded (a ticket from before
+ * passenger details existed). `passengers: n` records n named passengers on the ticket instead,
+ * none of them boarded yet.
+ */
 async function makeBooking(
   userId: string | null,
   bus: { id: string },
-  opts: { hoursAgo?: number; status?: 'CONFIRMED' | 'PENDING' | 'CANCELLED' | 'COMPLETED' } = {}
+  opts: { hoursAgo?: number; status?: 'CONFIRMED' | 'PENDING' | 'CANCELLED' | 'COMPLETED'; boarded?: boolean; passengers?: number } = {}
 ) {
   const dep = new Date(Date.now() - (opts.hoursAgo ?? 5) * HOUR)
   const trip = await prisma.schedule.create({
     data: { routeId: route.id, busId: bus.id, departureTime: dep, arrivalTime: new Date(dep.getTime() + 2 * HOUR), price: 100 },
   })
+  const people = opts.passengers ?? 0
+  const seats = Array.from({ length: Math.max(people, 1) }, (_, i) => String(i + 1))
+  const boardedAt = opts.boarded === false || people > 0 || dep.getTime() > Date.now() ? null : new Date(dep.getTime() + 5 * 60 * 1000)
   return prisma.booking.create({
-    data: { userId, scheduleId: trip.id, seatNumbers: ['1'], totalPrice: 100, status: opts.status ?? 'CONFIRMED', qrCode: `${tag}-qr-${qrCounter++}` },
+    data: {
+      userId,
+      scheduleId: trip.id,
+      seatNumbers: seats,
+      totalPrice: 100 * seats.length,
+      status: opts.status ?? 'CONFIRMED',
+      qrCode: `${tag}-qr-${qrCounter++}`,
+      boardedAt,
+      ...(people > 0 ? { passengers: { create: seats.map((seat) => ({ seatNumber: seat, name: `${tag} Passenger ${seat}` })) } } : {}),
+    },
   })
 }
 const rate = (bookingId: string, tok: string | undefined, body: unknown) => api('PUT', `/api/v1/bookings/${bookingId}/rating`, tok, body)
@@ -97,6 +114,7 @@ describe.skipIf(!TEST_URL)('ratings (database, real routes)', () => {
     app.use(express.json())
     app.use('/api/v1/bookings', (await import('../src/routes/booking.routes')).default)
     app.use('/api/v1/operator', (await import('../src/routes/operator.routes')).default)
+    app.use('/api/v1/checkin', (await import('../src/routes/checkin.routes')).default)
     app.use('/api/v1/admin', (await import('../src/routes/admin.routes')).default)
     app.use('/api/v1/schedules', (await import('../src/routes/schedule.routes')).default)
     server = http.createServer(app)
@@ -128,6 +146,72 @@ describe.skipIf(!TEST_URL)('ratings (database, real routes)', () => {
       await prisma.user.deleteMany({ where: { id: { in: [...created.users] } } })
       await prisma.$disconnect()
     }
+  })
+
+  describe('boarding: only someone the checker marked as boarded can rate', () => {
+    const board = (id: string, tok = A.manager.tok) => api('POST', `/api/v1/checkin/bookings/${id}/board`, tok)
+    const unboard = (id: string, tok = A.manager.tok) => api('POST', `/api/v1/checkin/bookings/${id}/unboard`, tok)
+    const view = async (bookingId: string, tok: string) => (await api('GET', `/api/v1/bookings/${bookingId}`, tok)).body.data.booking
+
+    it('a paid trip that has left but nobody boarded cannot be rated, and nothing is stored', async () => {
+      const b = await makeBooking(alem.user.id, A.bus1, { boarded: false })
+      expect(await view(b.id, alem.tok)).toMatchObject({ canRate: false, canEditRating: false, rating: null })
+      const out = await rate(b.id, alem.tok, { stars: 1, comment: 'I never even went' })
+      expect(out.status).toBe(400)
+      expect(out.body.error).toMatch(/boarded/i)
+      expect(await prisma.rating.count({ where: { bookingId: b.id } })).toBe(0)
+    })
+
+    it('opens when the checker marks the ticket as boarded (a ticket with no passenger rows)', async () => {
+      const b = await makeBooking(alem.user.id, A.bus1, { boarded: false })
+      const ticked = await board(b.id)
+      expect(ticked.status, JSON.stringify(ticked.body)).toBe(200)
+      expect(await view(b.id, alem.tok)).toMatchObject({ canRate: true })
+      const out = await rate(b.id, alem.tok, { stars: 4 })
+      expect(out.status, JSON.stringify(out.body)).toBe(201)
+    })
+
+    it('with passenger details, one boarded passenger on the ticket is enough', async () => {
+      const b = await makeBooking(alem.user.id, A.bus1, { passengers: 2 })
+      const people = await prisma.bookingPassenger.findMany({ where: { bookingId: b.id }, orderBy: { seatNumber: 'asc' } })
+      expect(people).toHaveLength(2)
+      expect((await view(b.id, alem.tok)).canRate).toBe(false)
+      expect((await rate(b.id, alem.tok, { stars: 5 })).status).toBe(400)
+
+      expect((await board(people[0].id)).status).toBe(200)
+      // The ticket itself is still not marked: the boarding is on the passenger
+      expect((await prisma.booking.findUnique({ where: { id: b.id } }))!.boardedAt).toBeNull()
+      expect((await view(b.id, alem.tok)).canRate).toBe(true)
+      expect((await rate(b.id, alem.tok, { stars: 5 })).status).toBe(201)
+    })
+
+    it('undoing the boarding before rating closes it again', async () => {
+      const b = await makeBooking(alem.user.id, A.bus1, { passengers: 1 })
+      const [p] = await prisma.bookingPassenger.findMany({ where: { bookingId: b.id } })
+      await board(p.id)
+      expect((await view(b.id, alem.tok)).canRate).toBe(true)
+      expect((await unboard(p.id)).status).toBe(200)
+      expect((await view(b.id, alem.tok)).canRate).toBe(false)
+      expect((await rate(b.id, alem.tok, { stars: 3 })).status).toBe(400)
+    })
+
+    it('a rating already given can still be changed if the boarding is undone later', async () => {
+      const b = await makeBooking(alem.user.id, A.bus1, { passengers: 1 })
+      const [p] = await prisma.bookingPassenger.findMany({ where: { bookingId: b.id } })
+      await board(p.id)
+      expect((await rate(b.id, alem.tok, { stars: 2 })).status).toBe(201)
+      await unboard(p.id)
+      expect(await view(b.id, alem.tok)).toMatchObject({ canRate: false, canEditRating: true })
+      const changed = await rate(b.id, alem.tok, { stars: 4 })
+      expect(changed.status).toBe(200)
+      expect(changed.body.data.rating.stars).toBe(4)
+    })
+
+    it("another company's checker cannot open rating for a trip it does not run", async () => {
+      const b = await makeBooking(alem.user.id, A.bus1, { boarded: false })
+      expect((await board(b.id, B.manager.tok)).status).toBe(404)
+      expect((await view(b.id, alem.tok)).canRate).toBe(false)
+    })
   })
 
   describe('who can rate, and when', () => {

@@ -87,10 +87,12 @@ describe.skipIf(!TEST_URL)('account page and passwords (P1, database, real route
   afterAll(async () => {
     await new Promise<void>((r) => (server ? server.close(() => r()) : r()))
     if (prisma) {
-      const users = await prisma.user.findMany({ where: { name: { startsWith: tag } }, select: { id: true } })
-      await prisma.operatorStaff.deleteMany({ where: { userId: { in: users.map((u) => u.id) } } })
+      // Find the test users by name AND by id: some tests rename their user, so the name alone misses them
+      const named = await prisma.user.findMany({ where: { name: { startsWith: tag } }, select: { id: true } })
+      const userIds = [...new Set([...named.map((u) => u.id), ...created.users])]
+      await prisma.operatorStaff.deleteMany({ where: { userId: { in: userIds } } })
       await prisma.operator.deleteMany({ where: { id: { in: [...created.operators] } } })
-      await prisma.user.deleteMany({ where: { id: { in: users.map((u) => u.id) } } })
+      await prisma.user.deleteMany({ where: { id: { in: userIds } } })
       await prisma.$disconnect()
     }
   })

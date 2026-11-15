@@ -1,8 +1,9 @@
 import { prisma } from './prisma'
 
 /**
- * Ratings: a passenger rates a trip once it has left. The stars belong to the bus
- * company. Rules in one place, so the routes, the booking pages and the tests agree.
+ * Ratings: a passenger rates a trip once it has left AND the ticket checker has marked
+ * them as boarded. The stars belong to the bus company. Rules in one place, so the
+ * routes, the booking pages and the tests agree.
  */
 
 /** A company's average is public only from this many ratings, so one angry rating cannot sink a new company. */
@@ -25,13 +26,28 @@ export type RatingState = {
 type RatableBooking = {
   status: string
   userId: string | null
+  // Both are needed to know if anyone boarded: the fields are required on purpose, so a
+  // query that forgets to load them fails the type check instead of quietly blocking ratings.
+  boardedAt: Date | null
+  passengers: { boardedAt: Date | null }[]
   schedule: { departureTime: Date }
   rating?: { createdAt: Date } | null
 }
 
 /**
+ * Has the ticket checker marked someone on this ticket as boarded? Boarding is recorded
+ * per passenger; only tickets sold before passenger details existed use the ticket's own
+ * boardedAt. If at least one person boarded, the person who booked may rate the trip.
+ */
+export function hasBoarded(booking: Pick<RatableBooking, 'boardedAt' | 'passengers'>): boolean {
+  return booking.boardedAt !== null || booking.passengers.some((p) => p.boardedAt !== null)
+}
+
+/**
  * Who may rate: the account that made the booking, for a paid booking whose trip has
- * already left, up to 30 days after it left. Cancelled and unpaid bookings never can.
+ * already left and on which the checker marked someone as boarded, up to 30 days after it
+ * left. Cancelled and unpaid bookings never can, and neither can someone who never boarded.
+ * A rating already given can still be changed (for 7 days) even if boarding is undone later.
  */
 export function ratingState(booking: RatableBooking, now: Date = new Date()): RatingState {
   const paid = booking.status === 'CONFIRMED' || booking.status === 'COMPLETED'
@@ -40,6 +56,7 @@ export function ratingState(booking: RatableBooking, now: Date = new Date()): Ra
   if (booking.rating) {
     return { canRate: false, canEdit: now.getTime() - booking.rating.createdAt.getTime() <= EDIT_WITHIN_DAYS * DAY_MS }
   }
+  if (!hasBoarded(booking)) return { canRate: false, canEdit: false }
   const windowOpen = now.getTime() - booking.schedule.departureTime.getTime() <= RATE_WITHIN_DAYS * DAY_MS
   return { canRate: windowOpen, canEdit: false }
 }

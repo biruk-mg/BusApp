@@ -159,7 +159,7 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
  * A booking as the passenger sees it with their rating: what they gave (if anything) and
  * whether they can rate or change it right now. Only the booker can rate, never an admin.
  */
-function withRating<T extends { userId: string | null; status: string; schedule: { departureTime: Date }; rating: Parameters<typeof ownRating>[0] | null }>(
+function withRating<T extends { userId: string | null; status: string; boardedAt: Date | null; passengers: { boardedAt: Date | null }[]; schedule: { departureTime: Date }; rating: Parameters<typeof ownRating>[0] | null }>(
   booking: T,
   viewerId: string
 ) {

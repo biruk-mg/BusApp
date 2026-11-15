@@ -8,11 +8,13 @@ import {
   MAX_COMMENT_LENGTH,
   MIN_PUBLIC_RATINGS,
   RATE_WITHIN_DAYS,
+  hasBoarded,
   ratingState,
 } from '../lib/ratings'
 
 /**
- * Ratings. A passenger rates a trip once it has left (stars 1-5 and an optional comment).
+ * Ratings. A passenger rates a trip once it has left and they have boarded (stars 1-5 and an
+ * optional comment).
  *  - Passenger: PUT /bookings/:id/rating
  *  - Company managers: GET /operator/ratings (their own stars, per bus, and comments)
  *  - Admin: GET /admin/ratings, POST /admin/ratings/:id/hide | unhide
@@ -61,7 +63,7 @@ export const rateBooking = async (req: AuthRequest, res: Response): Promise<void
 
     const booking = await prisma.booking.findUnique({
       where: { id: req.params.id as string },
-      include: { schedule: { include: { bus: true } }, rating: true },
+      include: { schedule: { include: { bus: true } }, rating: true, passengers: { select: { boardedAt: true } } },
     })
     // Someone else's booking looks exactly like a booking that does not exist
     if (!booking || booking.userId !== req.userId) throw new RuleError(404, 'Booking not found')
@@ -74,6 +76,10 @@ export const rateBooking = async (req: AuthRequest, res: Response): Promise<void
 
     const state = ratingState(booking)
     const existing = booking.rating
+    // Only people the checker saw getting on the bus can rate (a rating already given can still be changed)
+    if (!existing && !hasBoarded(booking)) {
+      throw new RuleError(400, 'You can rate a trip after the ticket checker has marked you as boarded')
+    }
 
     if (existing) {
       if (!state.canEdit) throw new RuleError(400, `A rating can only be changed for ${EDIT_WITHIN_DAYS} days after you gave it`)
