@@ -28,6 +28,7 @@ export const en = {
   "nav.bookATrip": "Book a Trip",
   "nav.createAccount": "Create Account",
   "nav.logout": "Logout",
+  "nav.account": "Account",
   "nav.openMenu": "Open menu",
   "nav.closeMenu": "Close menu",
   "footer.tagline": "Book bus tickets across Ethiopia online. Choose your seat, pay securely and travel with your QR ticket.",

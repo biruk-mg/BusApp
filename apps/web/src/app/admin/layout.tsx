@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { useAuthStore } from '@/store/auth.store'
 import Link from 'next/link'
-import { Menu, X, Bus, MapPin, Calendar, Ticket, Users, LayoutDashboard, LogOut, Building2, Wallet, Megaphone, BarChart3 } from 'lucide-react'
+import { Menu, X, Bus, MapPin, Calendar, Ticket, Users, LayoutDashboard, LogOut, Building2, Wallet, Megaphone, BarChart3, UserCircle } from 'lucide-react'
 
 const navItems = [
   { href: '/admin', label: 'Dashboard', icon: LayoutDashboard },
@@ -16,6 +16,7 @@ const navItems = [
   { href: '/admin/payouts', label: 'Payouts', icon: Wallet },
   { href: '/admin/banners', label: 'Offers', icon: Megaphone },
   { href: '/admin/users', label: 'Users', icon: Users },
+  { href: '/account', label: 'My account', icon: UserCircle },
 ]
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {

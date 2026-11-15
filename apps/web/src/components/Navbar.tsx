@@ -64,7 +64,7 @@ export default function Navbar() {
               )}
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', color: '#1a1a1a' }}>
                 <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: '#C0392B', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
-                  onClick={() => router.push('/bookings')}>
+                  title={t('nav.account')} onClick={() => router.push('/account')}>
                   <User size={15} color="white" />
                 </div>
                 <span className="nav-username" style={{ fontSize: '14px', fontWeight: 500 }}>
@@ -123,6 +123,10 @@ export default function Navbar() {
               <Link href="/bookings" onClick={() => setMenuOpen(false)}
                 style={{ padding: '12px 0', fontSize: '15px', color: '#333', textDecoration: 'none', borderBottom: '1px solid #F5F5F5', display: 'flex', alignItems: 'center', gap: '8px' }}>
                 🎫 {t('nav.myBookings')}
+              </Link>
+              <Link href="/account" onClick={() => setMenuOpen(false)}
+                style={{ padding: '12px 0', fontSize: '15px', color: '#333', textDecoration: 'none', borderBottom: '1px solid #F5F5F5', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                👤 {t('nav.account')}
               </Link>
               {user?.role === 'ADMIN' && (
                 <Link href="/admin" onClick={() => setMenuOpen(false)}

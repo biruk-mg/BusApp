@@ -25,6 +25,12 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
+    // A temporary password has to be replaced before anything else works
+    if (error.response?.status === 403 && error.response?.data?.code === 'PASSWORD_CHANGE_REQUIRED') {
+      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/account')) {
+        window.location.href = '/account?required=1'
+      }
+    }
     if (error.response?.status === 401) {
       if (typeof window !== 'undefined') {
         localStorage.removeItem('token')

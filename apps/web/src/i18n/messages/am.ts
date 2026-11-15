@@ -31,6 +31,7 @@ export const am: Record<MessageKey, string> = {
   "nav.bookATrip": "ጉዞ ያስይዙ",
   "nav.createAccount": "መለያ ክፈት",
   "nav.logout": "ውጣ",
+  "nav.account": "መለያ",
   "nav.openMenu": "ምናሌ ክፈት",
   "nav.closeMenu": "ምናሌ ዝጋ",
   "footer.tagline": "በመላው ኢትዮጵያ የአውቶቡስ ትኬት በኦንላይን ይያዙ። መቀመጫዎን ይምረጡ፣ በደህንነት ይክፈሉ እና በQR ትኬትዎ ይጓዙ።",

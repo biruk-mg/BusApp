@@ -320,6 +320,8 @@ describe.skipIf(!TEST_URL)('staff roles and permissions (database, real routes)'
   it('locks out a deactivated MANAGER at once, even with a valid token', async () => {
     const m = await api('POST', '/api/v1/operator/staff', tokManagerA, { name: `${tag} manager 3`, phone: newPhone(), password: 'third-pass', role: 'MANAGER' })
     expect(m.status).toBe(201)
+    // A new manager starts with a temporary password; here they have already chosen their own
+    await prisma.user.update({ where: { id: m.body.data.staff.user.id }, data: { mustChangePassword: false } })
     const tok = token(m.body.data.staff.user.id, 'OPERATOR')
     expect((await api('GET', '/api/v1/operator/buses', tok)).status).toBe(200)
     expect((await api('GET', '/api/v1/operator/staff', tok)).status).toBe(200)
@@ -369,6 +371,7 @@ describe.skipIf(!TEST_URL)('staff roles and permissions (database, real routes)'
   it('two managers removing each other at the same moment still leaves one', async () => {
     const m2 = await api('POST', '/api/v1/operator/staff', tokManagerA, { name: `${tag} manager 2`, phone: newPhone(), password: 'second-pass', role: 'MANAGER' })
     expect(m2.status).toBe(201)
+    await prisma.user.update({ where: { id: m2.body.data.staff.user.id }, data: { mustChangePassword: false } })
     const tok2 = token(m2.body.data.staff.user.id, 'OPERATOR')
     const row1 = await prisma.operatorStaff.findUniqueOrThrow({ where: { userId: managerA.id } })
     const row2 = m2.body.data.staff

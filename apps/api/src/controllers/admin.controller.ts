@@ -7,6 +7,7 @@ import { AuthRequest } from '../middleware/auth'
 import { normalizePhone, phoneVariants } from '../lib/phone'
 import { addisDateString, addisDayRange } from '../lib/time'
 import { SALE_BOOKING, periodRange, soldCents, isTicket } from '../lib/salesReport'
+import { temporaryPasswordCreate, temporaryPasswordUpdate } from '../lib/password'
 
 const DAY = 24 * 60 * 60 * 1000
 const PHONE = /^(\+2519|09)\d{8}$/
@@ -243,7 +244,7 @@ export const createOperator = async (req: AuthRequest, res: Response): Promise<v
         },
       })
       const user = await tx.user.create({
-        data: { name: d.managerName, phone: d.managerPhone, password: hashed, role: 'OPERATOR' },
+        data: { name: d.managerName, phone: d.managerPhone, ...temporaryPasswordCreate(hashed), role: 'OPERATOR' },
       })
       await tx.operatorStaff.create({ data: { userId: user.id, operatorId: operator.id, role: 'MANAGER' } })
       return operator
@@ -361,10 +362,33 @@ export const resetCompanyStaffPassword = async (req: AuthRequest, res: Response)
     if (!target) throw new RuleError(404, 'Staff member not found')
 
     const hashed = await bcrypt.hash(parsed.data.password, 12)
-    await prisma.user.update({ where: { id: target.userId }, data: { password: hashed } })
+    await prisma.user.update({ where: { id: target.userId }, data: temporaryPasswordUpdate(hashed) })
     res.json({ success: true, message: 'Password changed' })
   } catch (error) {
     fail(res, error, 'ResetCompanyStaffPassword')
+  }
+}
+
+// ─── Reset any person's password (passengers included) ────
+// There is no SMS "forgot password" yet, so this is how a passenger who forgot theirs gets back in:
+// the admin sets a temporary password, tells them, and they must choose their own at the next login.
+// Other admins are not reset here (each admin changes their own on the account page).
+export const resetUserPassword = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const parsed = z.object({ password: passwordRule }).safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({ success: false, error: parsed.error.issues[0].message })
+      return
+    }
+    const target = await prisma.user.findUnique({ where: { id: req.params.userId as string }, select: { id: true, role: true } })
+    if (!target) throw new RuleError(404, 'User not found')
+    if (target.role === 'ADMIN') throw new RuleError(403, 'An admin changes their own password on the account page')
+
+    const hashed = await bcrypt.hash(parsed.data.password, 12)
+    await prisma.user.update({ where: { id: target.id }, data: temporaryPasswordUpdate(hashed) })
+    res.json({ success: true, message: 'Temporary password set. They must choose a new one at the next login.' })
+  } catch (error) {
+    fail(res, error, 'ResetUserPassword')
   }
 }
 

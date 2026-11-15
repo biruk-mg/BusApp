@@ -7,6 +7,7 @@ import {
   suspendOperator,
   reactivateOperator,
   resetCompanyStaffPassword,
+  resetUserPassword,
   getAttention,
   getDashboard,
 } from '../controllers/admin.controller'
@@ -38,6 +39,7 @@ router.patch('/operators/:id', ...admin, updateOperator)
 router.post('/operators/:id/suspend', ...admin, suspendOperator)
 router.post('/operators/:id/reactivate', ...admin, reactivateOperator)
 router.post('/operators/:id/staff/:staffId/password', ...admin, resetCompanyStaffPassword)
+router.post('/users/:userId/password', ...admin, resetUserPassword)
 
 // Who sold how much (clickable numbers on the dashboard)
 router.get('/sales', ...admin, listSales)

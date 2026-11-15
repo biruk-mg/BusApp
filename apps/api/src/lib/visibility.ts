@@ -17,10 +17,10 @@ export async function isAdminRequest(req: Request): Promise<boolean> {
   try {
     const header = req.headers.authorization
     if (!header?.startsWith('Bearer ')) return false
-    const payload = jwt.verify(header.slice(7), process.env.JWT_SECRET as string) as { userId?: string; role?: string }
+    const payload = jwt.verify(header.slice(7), process.env.JWT_SECRET as string) as { userId?: string; role?: string; tv?: number }
     if (payload.role !== 'ADMIN' || !payload.userId) return false
-    const user = await prisma.user.findUnique({ where: { id: payload.userId }, select: { role: true } })
-    return user?.role === 'ADMIN'
+    const user = await prisma.user.findUnique({ where: { id: payload.userId }, select: { role: true, tokenVersion: true } })
+    return user?.role === 'ADMIN' && (payload.tv ?? 0) === user.tokenVersion
   } catch {
     return false
   }

@@ -83,11 +83,11 @@ export default function CompanyDetailPage() {
   }
 
   const resetPassword = async (s: StaffRow) => {
-    const password = window.prompt(`New password for ${s.name} (at least 6 characters). Tell them in person or by phone:`)
+    const password = window.prompt(`Temporary password for ${s.name} (at least 6 characters). They will choose their own at the next login. Tell them in person or by phone:`)
     if (!password) return
     try {
       await api.post(`/admin/operators/${id}/staff/${s.id}/password`, { password })
-      toast.success('Password changed')
+      toast.success('Temporary password set')
     } catch (err) {
       toast.error(errorOf(err, 'Failed to change the password'))
     }

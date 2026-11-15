@@ -20,6 +20,10 @@ export interface User {
   role: UserRole
   // Only for operator staff; null or missing for passengers and the admin
   staff?: StaffInfo | null
+  // The admin or a manager gave this person a temporary password: they must choose their own first
+  mustChangePassword?: boolean
+  // Only returned by "who am I"
+  passwordChangedAt?: string | null
   createdAt: Date
 }
 

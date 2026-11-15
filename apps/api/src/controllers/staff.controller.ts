@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { prisma } from '../lib/prisma'
 import { AuthRequest } from '../middleware/auth'
 import { companyOf } from '../middleware/staff'
+import { temporaryPasswordCreate, temporaryPasswordUpdate } from '../lib/password'
 
 const createSchema = z.object({
   name: z.string().trim().min(2, 'Name must be at least 2 characters').max(80),
@@ -76,7 +77,7 @@ export const createStaff = async (req: AuthRequest, res: Response): Promise<void
 
     const hashed = await bcrypt.hash(password, 12)
     const staff = await prisma.$transaction(async (tx) => {
-      const user = await tx.user.create({ data: { name, phone, password: hashed, role: 'OPERATOR' } })
+      const user = await tx.user.create({ data: { name, phone, ...temporaryPasswordCreate(hashed), role: 'OPERATOR' } })
       return tx.operatorStaff.create({
         data: { userId: user.id, operatorId, role },
         select: publicFields,
@@ -184,7 +185,7 @@ export const resetStaffPassword = async (req: AuthRequest, res: Response): Promi
     }
 
     const hashed = await bcrypt.hash(parsed.data.password, 12)
-    await prisma.user.update({ where: { id: target.userId }, data: { password: hashed } })
+    await prisma.user.update({ where: { id: target.userId }, data: temporaryPasswordUpdate(hashed) })
     res.json({ success: true, message: 'Password changed' })
   } catch (error) {
     console.error('ResetStaffPassword error:', error)

@@ -26,6 +26,7 @@ export function useStaffGuard(allowed: Allowed[]) {
   useEffect(() => {
     let cancelled = false
     const decide = (current: User) => {
+      if (current.mustChangePassword) { router.replace('/account?required=1'); return }
       const kind = kindOf(current)
       if (kind && allowed.includes(kind)) setReady(true)
       else router.replace(homeFor(current))

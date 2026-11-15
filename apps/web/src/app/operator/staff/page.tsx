@@ -98,7 +98,7 @@ export default function OperatorStaffPage() {
   const savePassword = async (member: StaffMember) => {
     try {
       await api.post(`/operator/staff/${member.id}/password`, { password: newPassword })
-      toast.success('Password changed. Tell them the new password.')
+      toast.success('Temporary password set. Tell them; they will choose their own at the next login.')
       setResetFor(null)
       setNewPassword('')
     } catch (err) {
@@ -153,7 +153,7 @@ export default function OperatorStaffPage() {
           </div>
           <p style={{ fontSize: '12px', color: '#999', marginBottom: '16px' }}>
             {ROLE_HELP[form.role]}. This creates a new account, so the phone number must not be registered already.
-            Staff cannot change their own password yet. If they forget it, set a new one here.
+            This is a temporary password: they choose their own the first time they log in. If they forget it, set a new temporary one here.
           </p>
           <button type="submit" disabled={submitting} style={{ background: submitting ? '#999' : '#C0392B', color: 'white', border: 'none', padding: '11px 24px', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: submitting ? 'not-allowed' : 'pointer' }}>
             {submitting ? 'Adding...' : 'Add staff member'}

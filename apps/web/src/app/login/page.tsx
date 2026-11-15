@@ -28,7 +28,7 @@ export default function LoginPage() {
       const { user, token } = res.data.data
       setAuth(user, token)
       toast.success(t('login.toast', { name: user.name }))
-      router.push(homeFor(user))
+      router.push(user.mustChangePassword ? '/account?required=1' : homeFor(user))
     } catch (err: unknown) {
       const error = err as { response?: { data?: { error?: string } } }
       toast.error(error.response?.data?.error || t('login.failed'))

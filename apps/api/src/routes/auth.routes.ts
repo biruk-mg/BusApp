@@ -1,6 +1,6 @@
 import { Router, IRouter, Request } from 'express'
-import { register, login, getMe, getAllUsers } from '../controllers/auth.controller'
-import { authenticate, authorizeAdmin } from '../middleware/auth'
+import { register, login, getMe, updateMe, changePassword, getAllUsers } from '../controllers/auth.controller'
+import { authenticate, authenticateAllowingPasswordChange, authorizeAdmin } from '../middleware/auth'
 import { rateLimit, clientIp } from '../middleware/rateLimit'
 
 const router: IRouter = Router()
@@ -30,12 +30,25 @@ const registerPerIp = rateLimit({
   message: 'Too many accounts were created from this connection. Please try again later.',
 })
 
+// Someone guessing the current password of a stolen, still-logged-in device is the risk here,
+// so wrong tries are counted per account (the account id comes from the verified login token).
+const changePasswordPerUser = rateLimit({
+  windowMs: 15 * MINUTE,
+  max: 10,
+  key: (req) => `change-password:${(req as Request & { userId?: string }).userId ?? clientIp(req)}`,
+  message: 'Too many password change attempts. Please wait 15 minutes and try again.',
+})
+
 // Public routes
 router.post('/register', registerPerIp, register)
 router.post('/login', loginPerIp, loginPerPhone, login)
 
 // Protected routes
-router.get('/me', authenticate, getMe)
+// "Who am I" and "change my password" also work for someone who was given a temporary
+// password and has not chosen their own yet; every other route refuses them until they do.
+router.get('/me', authenticateAllowingPasswordChange, getMe)
+router.patch('/me', authenticate, updateMe)
+router.post('/change-password', authenticateAllowingPasswordChange, changePasswordPerUser, changePassword)
 
 // Add this line at the bottom
 router.get('/users', authenticate, authorizeAdmin, getAllUsers)

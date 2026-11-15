@@ -108,9 +108,11 @@ describe.skipIf(!TEST_URL)('admin powers are checked in the database (G2)', () =
   })
 
   const refusedForBoth = async (method: string, path: string, body?: unknown) => {
-    for (const who of [demoted, removed]) {
+    // A demoted admin is still a person, so they are refused (403). A removed admin's account is gone,
+    // so their old token is not a login at all any more (401). Either way they get nothing.
+    for (const [who, expected] of [[demoted, 403], [removed, 401]] as const) {
       const res = await api(method, path, who.tok, body)
-      expect(res.status, `${method} ${path} for ${who === demoted ? 'a demoted admin' : 'a removed admin'}: ${JSON.stringify(res.body)}`).toBe(403)
+      expect(res.status, `${method} ${path} for ${who === demoted ? 'a demoted admin' : 'a removed admin'}: ${JSON.stringify(res.body)}`).toBe(expected)
     }
   }
 

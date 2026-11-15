@@ -1,7 +1,8 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { Bus, LogOut } from 'lucide-react'
+import Link from 'next/link'
+import { Bus, LogOut, UserCircle } from 'lucide-react'
 import { useAuthStore } from '@/store/auth.store'
 import { useStaffGuard, Allowed } from '@/hooks/useStaffGuard'
 import { STAFF_ROLE_LABEL } from '@/lib/staffHome'
@@ -46,12 +47,20 @@ export default function StaffShell({
             </div>
           </div>
         </div>
+        <div style={{ display: 'flex', gap: '8px' }}>
+        <Link
+          href="/account"
+          style={{ display: 'flex', alignItems: 'center', gap: '6px', border: '1px solid rgba(255,255,255,0.2)', color: 'rgba(255,255,255,0.7)', borderRadius: '8px', padding: '8px 12px', fontSize: '13px', textDecoration: 'none' }}
+        >
+          <UserCircle size={14} /> Account
+        </Link>
         <button
           onClick={() => { logout(); router.push('/') }}
           style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'none', border: '1px solid rgba(255,255,255,0.2)', color: 'rgba(255,255,255,0.7)', borderRadius: '8px', padding: '8px 12px', fontSize: '13px', cursor: 'pointer' }}
         >
           <LogOut size={14} /> Logout
         </button>
+        </div>
       </header>
       <main style={{ maxWidth: '720px', margin: '0 auto', padding: '28px 20px' }}>
         <h1 style={{ fontSize: '22px', fontWeight: 700, color: '#1a1a1a', marginBottom: '16px' }}>{title}</h1>

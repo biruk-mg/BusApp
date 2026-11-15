@@ -31,6 +31,7 @@ export const om: Record<MessageKey, string> = {
   "nav.bookATrip": "Imala qabsiisi",
   "nav.createAccount": "Akkaawuntii banuu",
   "nav.logout": "Ba'i",
+  "nav.account": "Akkaawuntii",
   "nav.openMenu": "Menuu bani",
   "nav.closeMenu": "Menuu cufi",
   "footer.tagline": "Tikeetii awutobusii Itoophiyaa guutuu toora interneetiin qabadhaa. Teessoo filadhaa, nageenyaan kaffalaa, tikeetii QR keessaniin imalaa.",

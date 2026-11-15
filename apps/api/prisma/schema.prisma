@@ -15,6 +15,15 @@ model User {
   role      Role     @default(CUSTOMER)
   bookings  Booking[]
   staff     OperatorStaff?
+
+  // Login sessions. Every login token carries this number; changing or resetting the
+  // password adds 1, which logs the person out of every other device at once.
+  tokenVersion       Int       @default(0)
+  // Set when the admin or a manager gave this person a temporary password: they must
+  // choose their own before they can do anything else.
+  mustChangePassword Boolean   @default(false)
+  passwordChangedAt  DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }

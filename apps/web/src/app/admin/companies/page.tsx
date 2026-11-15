@@ -52,7 +52,7 @@ export default function CompaniesPage() {
         managerName: form.managerName, managerPhone: form.managerPhone, managerPassword: form.managerPassword,
         commissionPercent: Number(form.commissionPercent), isDemo: form.isDemo, notes: form.notes || undefined,
       })
-      toast.success('Company created. Give the manager their phone number and password.')
+      toast.success('Company created. Give the manager their phone number and temporary password; they choose their own at the first login.')
       setForm(empty)
       setShowForm(false)
       load()
@@ -92,7 +92,7 @@ export default function CompaniesPage() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', marginBottom: '16px' }}>
             <div><label style={label}>Manager name</label><input style={input} value={form.managerName} onChange={(e) => set('managerName', e.target.value)} required /></div>
             <div><label style={label}>Manager phone (login)</label><input style={input} value={form.managerPhone} onChange={(e) => set('managerPhone', e.target.value)} placeholder="0911223344" required /></div>
-            <div><label style={label}>Starting password</label><input style={input} type="text" value={form.managerPassword} onChange={(e) => set('managerPassword', e.target.value)} minLength={6} required /></div>
+            <div><label style={label}>Temporary starting password</label><input style={input} type="text" value={form.managerPassword} onChange={(e) => set('managerPassword', e.target.value)} minLength={6} required /></div>
           </div>
           <div style={{ marginBottom: '16px' }}>
             <label style={label}>Notes (private, only you see them)</label>

@@ -168,7 +168,14 @@ describe.skipIf(!TEST_URL)('platform administration (database, real routes)', ()
     const login = await api('POST', '/api/v1/auth/login', undefined, { phone: managerPhone, password: 'secret12' })
     expect(login.status).toBe(200)
     expect(login.body.data.user.staff).toMatchObject({ role: 'MANAGER', operatorId: op.id, suspended: false })
-    const profile = await api('GET', '/api/v1/operator/profile', login.body.data.token)
+    // The admin chose the first password, so the manager must pick their own before doing anything else
+    expect(login.body.data.user.mustChangePassword).toBe(true)
+    const blocked = await api('GET', '/api/v1/operator/profile', login.body.data.token)
+    expect(blocked.status).toBe(403)
+    expect(blocked.body.code).toBe('PASSWORD_CHANGE_REQUIRED')
+    const changed = await api('POST', '/api/v1/auth/change-password', login.body.data.token, { currentPassword: 'secret12', newPassword: 'my-own-pass' })
+    expect(changed.status).toBe(200)
+    const profile = await api('GET', '/api/v1/operator/profile', changed.body.data.token)
     expect(profile.body.data.operator.id).toBe(op.id)
 
     const row = await prisma.user.findUniqueOrThrow({ where: { phone: managerPhone } })
@@ -375,8 +382,10 @@ describe.skipIf(!TEST_URL)('platform administration (database, real routes)', ()
     expect((await api('POST', `/api/v1/admin/operators/${a.operator.id}/staff/${a.manager.staff.id}/password`, admin.tok, { password: '123' })).status).toBe(400)
     // company B's manager can't be reached through company A's URL
     expect((await api('POST', `/api/v1/admin/operators/${a.operator.id}/staff/${b.manager.staff.id}/password`, admin.tok, { password: 'newpass99' })).status).toBe(404)
-    // and nobody but the admin can use it
-    expect((await api('POST', `/api/v1/admin/operators/${a.operator.id}/staff/${a.seller.staff.id}/password`, a.manager.tok, { password: 'newpass99' })).status).toBe(403)
+    // and nobody but the admin can use it (a fresh login for the manager: the reset ended their old one)
+    const fresh = await prisma.user.update({ where: { id: a.manager.user.id }, data: { mustChangePassword: false }, select: { tokenVersion: true } })
+    const managerTok = jwt.sign({ userId: a.manager.user.id, role: 'OPERATOR', tv: fresh.tokenVersion }, process.env.JWT_SECRET!)
+    expect((await api('POST', `/api/v1/admin/operators/${a.operator.id}/staff/${a.seller.staff.id}/password`, managerTok, { password: 'newpass99' })).status).toBe(403)
   })
 
   // ─── Lists, dashboard and attention ─────────────────────
