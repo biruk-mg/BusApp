@@ -1,0 +1,2280 @@
+diff --git a/apps/api/prisma/schema.prisma b/apps/api/prisma/schema.prisma
+index b908c6f..e777148 100644
+--- a/apps/api/prisma/schema.prisma
++++ b/apps/api/prisma/schema.prisma
+@@ -27,9 +27,26 @@ model Operator {
+   buses       Bus[]
+   pickupPoints PickupPoint[]
+   staff       OperatorStaff[]
++
++  // Managed by the platform admin
++  status          OperatorStatus @default(ACTIVE)
++  suspendedAt     DateTime?
++  suspendedReason String?
++  // Demo / test company: hidden from passengers, no online bookings
++  isDemo          Boolean        @default(false)
++  // Share of ONLINE sales kept by the platform, in percent (5 = 5%).
++  // Counter sales carry no commission. Set to 0 for a pilot operator.
++  commissionPercent Float        @default(5)
++  notes           String?
++
+   createdAt   DateTime @default(now())
+ }
+ 
++enum OperatorStatus {
++  ACTIVE
++  SUSPENDED
++}
++
+ model Bus {
+   id          String     @id @default(cuid())
+   operatorId  String
+diff --git a/apps/api/src/controllers/admin.controller.ts b/apps/api/src/controllers/admin.controller.ts
+new file mode 100644
+index 0000000..effc1f3
+--- /dev/null
++++ b/apps/api/src/controllers/admin.controller.ts
+@@ -0,0 +1,512 @@
++import { Response } from 'express'
++import bcrypt from 'bcryptjs'
++import { z } from 'zod'
++import { Prisma } from '@prisma/client'
++import { prisma } from '../lib/prisma'
++import { AuthRequest } from '../middleware/auth'
++import { normalizePhone, phoneVariants } from '../lib/phone'
++import { addisDateString, addisDayRange } from '../lib/time'
++
++const DAY = 24 * 60 * 60 * 1000
++const PHONE = /^(\+2519|09)\d{8}$/
++const passwordRule = z.string().min(6, 'Password must be at least 6 characters').max(100)
++
++const createSchema = z.object({
++  companyName: z.string().trim().min(2, 'Company name is required').max(100),
++  licenseNo: z.string().trim().min(3, 'License number is required').max(40),
++  phone: z.string().regex(PHONE, 'Invalid company phone number'),
++  managerName: z.string().trim().min(2, 'Manager name is required').max(80),
++  managerPhone: z.string().regex(PHONE, 'Invalid manager phone number'),
++  managerPassword: passwordRule,
++  commissionPercent: z.number().min(0, 'Commission cannot be negative').max(50, 'Commission cannot be above 50%').default(5),
++  isDemo: z.boolean().default(false),
++  notes: z.string().trim().max(500).optional(),
++})
++
++const updateSchema = z
++  .object({
++    companyName: z.string().trim().min(2).max(100),
++    licenseNo: z.string().trim().min(3).max(40),
++    phone: z.string().regex(PHONE, 'Invalid company phone number'),
++    commissionPercent: z.number().min(0, 'Commission cannot be negative').max(50, 'Commission cannot be above 50%'),
++    isDemo: z.boolean(),
++    notes: z.string().trim().max(500).nullable(),
++  })
++  .partial()
++  .refine((v) => Object.keys(v).length > 0, 'Nothing to change')
++
++class RuleError extends Error {
++  constructor(public status: number, message: string) {
++    super(message)
++  }
++}
++const isUniqueError = (e: unknown) => (e as { code?: string })?.code === 'P2002'
++
++function fail(res: Response, error: unknown, label: string): void {
++  if (error instanceof RuleError) {
++    res.status(error.status).json({ success: false, error: error.message })
++    return
++  }
++  console.error(`${label} error:`, error)
++  res.status(500).json({ success: false, error: 'Internal server error' })
++}
++
++/** Does this phone number belong to an old-style operator account that the phone-number link could hand a new company to? */
++async function legacyOperatorHasPhone(phone: string): Promise<boolean> {
++  const canonical = normalizePhone(phone)
++  const variants = canonical ? phoneVariants(canonical) : [phone]
++  const user = await prisma.user.findFirst({
++    where: { phone: { in: variants }, role: 'OPERATOR', staff: null },
++    select: { id: true },
++  })
++  return !!user
++}
++
++// ─── Sales numbers (confirmed online and counter sales) ──
++interface Totals { tickets: number; total: number }
++const blank = (): Totals => ({ tickets: 0, total: 0 })
++
++/**
++ * Sales since a moment, per company: confirmed (or completed) bookings only,
++ * split into online and counter. Voided counter sales and cancelled bookings
++ * are not counted.
++ */
++async function salesSince(since: Date, until?: Date) {
++  const rows = await prisma.booking.findMany({
++    where: {
++      status: { in: ['CONFIRMED', 'COMPLETED'] },
++      createdAt: { gte: since, ...(until ? { lt: until } : {}) },
++    },
++    select: {
++      source: true,
++      totalPrice: true,
++      schedule: { select: { bus: { select: { operatorId: true, operator: { select: { isDemo: true } } } } } },
++    },
++  })
++  const byOperator = new Map<string, { online: Totals; counter: Totals }>()
++  const platform = { online: blank(), counter: blank() }
++  for (const r of rows) {
++    const id = r.schedule.bus.operatorId
++    const entry = byOperator.get(id) ?? { online: blank(), counter: blank() }
++    const side = r.source === 'COUNTER' ? 'counter' : 'online'
++    entry[side].tickets += 1
++    entry[side].total += r.totalPrice
++    byOperator.set(id, entry)
++    // Demo companies are left out of the platform totals
++    if (!r.schedule.bus.operator.isDemo) {
++      platform[side].tickets += 1
++      platform[side].total += r.totalPrice
++    }
++  }
++  return { byOperator, platform }
++}
++
++const managerOf = (staff: { role: string; active: boolean; user: { name: string; phone: string } }[]) => {
++  const m = staff.find((s) => s.role === 'MANAGER' && s.active)
++  return m ? { name: m.user.name, phone: m.user.phone } : null
++}
++
++const companyView = (
++  o: Prisma.OperatorGetPayload<{ include: { staff: { include: { user: { select: { name: true; phone: true } } } }; _count: { select: { buses: true } } } }>,
++  extra: { upcomingTrips: number; online30: Totals; counter30: Totals }
++) => ({
++  id: o.id,
++  companyName: o.companyName,
++  licenseNo: o.licenseNo,
++  phone: o.phone,
++  status: o.status,
++  suspendedAt: o.suspendedAt,
++  suspendedReason: o.suspendedReason,
++  isDemo: o.isDemo,
++  commissionPercent: o.commissionPercent,
++  notes: o.notes,
++  createdAt: o.createdAt,
++  buses: o._count.buses,
++  activeStaff: o.staff.filter((s) => s.active).length,
++  manager: managerOf(o.staff),
++  ...extra,
++})
++
++async function upcomingTripsByCompany(): Promise<Map<string, number>> {
++  const trips = await prisma.schedule.findMany({
++    where: { departureTime: { gt: new Date() }, status: 'OPEN' },
++    select: { bus: { select: { operatorId: true } } },
++  })
++  const counts = new Map<string, number>()
++  for (const t of trips) counts.set(t.bus.operatorId, (counts.get(t.bus.operatorId) ?? 0) + 1)
++  return counts
++}
++
++const companyInclude = {
++  staff: { include: { user: { select: { name: true, phone: true } } } },
++  _count: { select: { buses: true } },
++} as const
++
++// ─── List companies ──────────────────────────────────────
++export const listOperators = async (_req: AuthRequest, res: Response): Promise<void> => {
++  try {
++    const [operators, trips, sales] = await Promise.all([
++      prisma.operator.findMany({ include: companyInclude, orderBy: { createdAt: 'asc' } }),
++      upcomingTripsByCompany(),
++      salesSince(new Date(Date.now() - 30 * DAY)),
++    ])
++    res.json({
++      success: true,
++      data: {
++        operators: operators.map((o) =>
++          companyView(o, {
++            upcomingTrips: trips.get(o.id) ?? 0,
++            online30: sales.byOperator.get(o.id)?.online ?? blank(),
++            counter30: sales.byOperator.get(o.id)?.counter ?? blank(),
++          })
++        ),
++      },
++    })
++  } catch (error) {
++    fail(res, error, 'ListOperators')
++  }
++}
++
++// ─── One company, with its staff ─────────────────────────
++export const getOperator = async (req: AuthRequest, res: Response): Promise<void> => {
++  try {
++    const id = req.params.id as string
++    const operator = await prisma.operator.findUnique({ where: { id }, include: companyInclude })
++    if (!operator) throw new RuleError(404, 'Company not found')
++
++    const [trips, sales, pickupPoints] = await Promise.all([
++      upcomingTripsByCompany(),
++      salesSince(new Date(Date.now() - 30 * DAY)),
++      prisma.pickupPoint.count({ where: { operatorId: id } }),
++    ])
++    res.json({
++      success: true,
++      data: {
++        operator: {
++          ...companyView(operator, {
++            upcomingTrips: trips.get(id) ?? 0,
++            online30: sales.byOperator.get(id)?.online ?? blank(),
++            counter30: sales.byOperator.get(id)?.counter ?? blank(),
++          }),
++          pickupPoints,
++          staff: operator.staff
++            .map((s) => ({ id: s.id, role: s.role, active: s.active, name: s.user.name, phone: s.user.phone }))
++            .sort((a, b) => Number(b.active) - Number(a.active) || a.role.localeCompare(b.role)),
++        },
++      },
++    })
++  } catch (error) {
++    fail(res, error, 'GetOperator')
++  }
++}
++
++// ─── Create a company with its first manager ─────────────
++// The admin meets the operator, checks the license and creates everything in
++// one step. The manager always gets a brand new account (an existing
++// passenger account is never taken over).
++export const createOperator = async (req: AuthRequest, res: Response): Promise<void> => {
++  try {
++    const parsed = createSchema.safeParse(req.body)
++    if (!parsed.success) {
++      res.status(400).json({ success: false, error: parsed.error.issues[0].message })
++      return
++    }
++    const d = parsed.data
++
++    const managerCanonical = normalizePhone(d.managerPhone)!
++    if (await prisma.user.findFirst({ where: { phone: { in: phoneVariants(managerCanonical) } } })) {
++      throw new RuleError(409, 'The manager phone number already has an account. The manager needs a new account with their own number.')
++    }
++    if (await prisma.operator.findUnique({ where: { licenseNo: d.licenseNo } })) {
++      throw new RuleError(409, 'A company with this license number already exists')
++    }
++    // An old-style operator account could otherwise be handed this company by its phone number
++    const companyPhoneIsManagerPhone = normalizePhone(d.phone) === managerCanonical
++    if (!companyPhoneIsManagerPhone && (await legacyOperatorHasPhone(d.phone))) {
++      throw new RuleError(409, 'This company phone number belongs to an existing operator account. Use a different company phone.')
++    }
++
++    const hashed = await bcrypt.hash(d.managerPassword, 12)
++    const created = await prisma.$transaction(async (tx) => {
++      const operator = await tx.operator.create({
++        data: {
++          companyName: d.companyName,
++          licenseNo: d.licenseNo,
++          phone: d.phone,
++          commissionPercent: d.commissionPercent,
++          isDemo: d.isDemo,
++          notes: d.notes || null,
++        },
++      })
++      const user = await tx.user.create({
++        data: { name: d.managerName, phone: d.managerPhone, password: hashed, role: 'OPERATOR' },
++      })
++      await tx.operatorStaff.create({ data: { userId: user.id, operatorId: operator.id, role: 'MANAGER' } })
++      return operator
++    })
++
++    const operator = await prisma.operator.findUniqueOrThrow({ where: { id: created.id }, include: companyInclude })
++    res.status(201).json({
++      success: true,
++      message: 'Company created',
++      data: { operator: companyView(operator, { upcomingTrips: 0, online30: blank(), counter30: blank() }) },
++    })
++  } catch (error) {
++    if (isUniqueError(error)) {
++      res.status(409).json({ success: false, error: 'This license number or phone number is already registered' })
++      return
++    }
++    fail(res, error, 'CreateOperator')
++  }
++}
++
++// ─── Edit company details ────────────────────────────────
++export const updateOperator = async (req: AuthRequest, res: Response): Promise<void> => {
++  try {
++    const parsed = updateSchema.safeParse(req.body)
++    if (!parsed.success) {
++      res.status(400).json({ success: false, error: parsed.error.issues[0].message })
++      return
++    }
++    const id = req.params.id as string
++    const current = await prisma.operator.findUnique({ where: { id } })
++    if (!current) throw new RuleError(404, 'Company not found')
++
++    const d = parsed.data
++    if (d.licenseNo && d.licenseNo !== current.licenseNo && (await prisma.operator.findUnique({ where: { licenseNo: d.licenseNo } }))) {
++      throw new RuleError(409, 'A company with this license number already exists')
++    }
++    if (d.phone && d.phone !== current.phone && (await legacyOperatorHasPhone(d.phone))) {
++      throw new RuleError(409, 'This phone number belongs to an existing operator account. Use a different company phone.')
++    }
++
++    await prisma.operator.update({ where: { id }, data: d })
++    const operator = await prisma.operator.findUniqueOrThrow({ where: { id }, include: companyInclude })
++    res.json({
++      success: true,
++      message: 'Company updated',
++      data: { operator: companyView(operator, { upcomingTrips: 0, online30: blank(), counter30: blank() }) },
++    })
++  } catch (error) {
++    if (isUniqueError(error)) {
++      res.status(409).json({ success: false, error: 'This license number is already registered' })
++      return
++    }
++    fail(res, error, 'UpdateOperator')
++  }
++}
++
++// ─── Suspend / reactivate ────────────────────────────────
++// A suspended company can't sell, its staff can't work, and its trips vanish
++// from search. Bookings that already exist stay valid.
++export const suspendOperator = async (req: AuthRequest, res: Response): Promise<void> => {
++  try {
++    const parsed = z.object({ reason: z.string().trim().min(3, 'Please give a reason').max(200) }).safeParse(req.body)
++    if (!parsed.success) {
++      res.status(400).json({ success: false, error: parsed.error.issues[0].message })
++      return
++    }
++    const id = req.params.id as string
++    // Only one caller can win: suspending twice changes nothing
++    const changed = await prisma.operator.updateMany({
++      where: { id, status: 'ACTIVE' },
++      data: { status: 'SUSPENDED', suspendedAt: new Date(), suspendedReason: parsed.data.reason },
++    })
++    if (changed.count === 0) {
++      const exists = await prisma.operator.findUnique({ where: { id }, select: { id: true } })
++      throw new RuleError(exists ? 409 : 404, exists ? 'This company is already suspended' : 'Company not found')
++    }
++    res.json({ success: true, message: 'Company suspended' })
++  } catch (error) {
++    fail(res, error, 'SuspendOperator')
++  }
++}
++
++export const reactivateOperator = async (req: AuthRequest, res: Response): Promise<void> => {
++  try {
++    const id = req.params.id as string
++    const changed = await prisma.operator.updateMany({
++      where: { id, status: 'SUSPENDED' },
++      data: { status: 'ACTIVE', suspendedAt: null, suspendedReason: null },
++    })
++    if (changed.count === 0) {
++      const exists = await prisma.operator.findUnique({ where: { id }, select: { id: true } })
++      throw new RuleError(exists ? 409 : 404, exists ? 'This company is not suspended' : 'Company not found')
++    }
++    res.json({ success: true, message: 'Company reactivated' })
++  } catch (error) {
++    fail(res, error, 'ReactivateOperator')
++  }
++}
++
++// ─── Reset a staff member's password (managers included) ──
++// Managers can't reset each other's passwords (C1), so this is how a manager who
++// forgot theirs gets back in.
++export const resetCompanyStaffPassword = async (req: AuthRequest, res: Response): Promise<void> => {
++  try {
++    const parsed = z.object({ password: passwordRule }).safeParse(req.body)
++    if (!parsed.success) {
++      res.status(400).json({ success: false, error: parsed.error.issues[0].message })
++      return
++    }
++    const target = await prisma.operatorStaff.findFirst({
++      where: { id: req.params.staffId as string, operatorId: req.params.id as string },
++      select: { userId: true },
++    })
++    // A staff member of another company looks like one that doesn't exist
++    if (!target) throw new RuleError(404, 'Staff member not found')
++
++    const hashed = await bcrypt.hash(parsed.data.password, 12)
++    await prisma.user.update({ where: { id: target.userId }, data: { password: hashed } })
++    res.json({ success: true, message: 'Password changed' })
++  } catch (error) {
++    fail(res, error, 'ResetCompanyStaffPassword')
++  }
++}
++
++// ─── Things that need the admin's attention ──────────────
++type Severity = 'high' | 'medium' | 'info'
++interface AttentionItem {
++  kind: 'REFUND_NEEDED' | 'NO_MANAGER' | 'NO_BUSES' | 'NO_UPCOMING_TRIPS' | 'SUSPENDED'
++  severity: Severity
++  title: string
++  detail: string
++  operatorId?: string
++  bookingId?: string
++}
++
++async function buildAttention(): Promise<AttentionItem[]> {
++  const now = new Date()
++  const items: AttentionItem[] = []
++
++  // Passengers who paid online but lost their seat (the seat was taken first)
++  const refunds = await prisma.booking.findMany({
++    where: {
++      source: 'ONLINE',
++      status: 'CANCELLED',
++      payment: { is: { status: 'SUCCESS' } },
++      createdAt: { gte: new Date(now.getTime() - 60 * DAY) },
++    },
++    include: {
++      user: { select: { name: true, phone: true } },
++      schedule: { include: { route: true, bus: { select: { operatorId: true, operator: { select: { companyName: true } } } } } },
++    },
++    orderBy: { createdAt: 'desc' },
++    take: 50,
++  })
++  for (const b of refunds) {
++    items.push({
++      kind: 'REFUND_NEEDED',
++      severity: 'high',
++      title: `Refund needed: ETB ${b.totalPrice}`,
++      detail: `${b.user?.name ?? 'Passenger'} (${b.user?.phone ?? 'no phone'}) paid for ${b.schedule.route.fromCity} → ${b.schedule.route.toCity} with ${b.schedule.bus.operator.companyName}, but the seat was not confirmed.`,
++      operatorId: b.schedule.bus.operatorId,
++      bookingId: b.id,
++    })
++  }
++
++  const operators = await prisma.operator.findMany({
++    include: { staff: { select: { role: true, active: true } }, _count: { select: { buses: true } } },
++    orderBy: { createdAt: 'asc' },
++  })
++  const soon = await prisma.schedule.findMany({
++    where: { departureTime: { gt: now, lt: new Date(now.getTime() + 7 * DAY) }, status: 'OPEN' },
++    select: { bus: { select: { operatorId: true } } },
++  })
++  const withTrips = new Set(soon.map((t) => t.bus.operatorId))
++
++  for (const o of operators) {
++    if (o.status === 'SUSPENDED') {
++      items.push({ kind: 'SUSPENDED', severity: 'info', title: `${o.companyName} is suspended`, detail: o.suspendedReason ?? '', operatorId: o.id })
++      continue
++    }
++    if (o.isDemo) continue // demo companies are not expected to be complete
++    if (!o.staff.some((s) => s.role === 'MANAGER' && s.active)) {
++      items.push({ kind: 'NO_MANAGER', severity: 'high', title: `${o.companyName} has no active manager`, detail: 'Nobody can log in to run this company.', operatorId: o.id })
++    }
++    if (o._count.buses === 0) {
++      items.push({ kind: 'NO_BUSES', severity: 'medium', title: `${o.companyName} has no buses`, detail: 'Passengers cannot book until the company adds a bus and trips.', operatorId: o.id })
++    } else if (!withTrips.has(o.id)) {
++      items.push({ kind: 'NO_UPCOMING_TRIPS', severity: 'medium', title: `${o.companyName} has no trips in the next 7 days`, detail: 'Passengers cannot book this company right now.', operatorId: o.id })
++    }
++  }
++
++  const rank: Record<Severity, number> = { high: 0, medium: 1, info: 2 }
++  return items.sort((a, b) => rank[a.severity] - rank[b.severity])
++}
++
++export const getAttention = async (_req: AuthRequest, res: Response): Promise<void> => {
++  try {
++    res.json({ success: true, data: { items: await buildAttention() } })
++  } catch (error) {
++    fail(res, error, 'GetAttention')
++  }
++}
++
++// ─── Dashboard ───────────────────────────────────────────
++// Demo companies are left out of the sales and trip numbers.
++export const getDashboard = async (_req: AuthRequest, res: Response): Promise<void> => {
++  try {
++    const now = new Date()
++    const today = addisDayRange(addisDateString(now))
++
++    const [companies, passengers, todaySales, last30, attention, recent, upcomingTrips] = await Promise.all([
++      prisma.operator.groupBy({ by: ['status', 'isDemo'], _count: { _all: true } }),
++      prisma.user.count({ where: { role: 'CUSTOMER' } }),
++      salesSince(today.start, today.end),
++      salesSince(new Date(now.getTime() - 30 * DAY)),
++      buildAttention(),
++      prisma.booking.findMany({
++        where: { schedule: { bus: { operator: { isDemo: false } } } },
++        include: {
++          user: { select: { name: true, phone: true } },
++          schedule: { include: { route: true, bus: { select: { operator: { select: { companyName: true } } } } } },
++        },
++        orderBy: { createdAt: 'desc' },
++        take: 8,
++      }),
++      prisma.schedule.count({
++        where: {
++          departureTime: { gt: now, lt: new Date(now.getTime() + 7 * DAY) },
++          status: 'OPEN',
++          bus: { operator: { status: 'ACTIVE', isDemo: false } },
++        },
++      }),
++    ])
++
++    const count = (pick: (c: (typeof companies)[number]) => boolean) =>
++      companies.filter(pick).reduce((n, c) => n + c._count._all, 0)
++
++    res.json({
++      success: true,
++      data: {
++        companies: {
++          total: count(() => true),
++          active: count((c) => c.status === 'ACTIVE' && !c.isDemo),
++          suspended: count((c) => c.status === 'SUSPENDED'),
++          demo: count((c) => c.isDemo),
++        },
++        passengers,
++        upcomingTrips,
++        today: todaySales.platform,
++        last30: last30.platform,
++        attention: { total: attention.length, high: attention.filter((a) => a.severity === 'high').length, items: attention.slice(0, 8) },
++        recentBookings: recent.map((b) => ({
++          id: b.id,
++          source: b.source,
++          status: b.status,
++          totalPrice: b.totalPrice,
++          createdAt: b.createdAt,
++          passengerName: b.user?.name ?? b.passengerName ?? null,
++          passengerPhone: b.user?.phone ?? b.passengerPhone ?? null,
++          companyName: b.schedule.bus.operator.companyName,
++          fromCity: b.schedule.route.fromCity,
++          toCity: b.schedule.route.toCity,
++          departureTime: b.schedule.departureTime,
++        })),
++      },
++    })
++  } catch (error) {
++    fail(res, error, 'GetDashboard')
++  }
++}
+diff --git a/apps/api/src/controllers/booking.controller.ts b/apps/api/src/controllers/booking.controller.ts
+index ccd9fe0..46766fb 100644
+--- a/apps/api/src/controllers/booking.controller.ts
++++ b/apps/api/src/controllers/booking.controller.ts
+@@ -4,6 +4,7 @@ import QRCode from 'qrcode'
+ import { prisma } from '../lib/prisma'
+ import { AuthRequest } from '../middleware/auth'
+ import { HOLD_MINUTES, releaseExpiredHolds } from '../lib/seats'
++import { PUBLIC_OPERATOR_FIELDS } from '../lib/visibility'
+ import { SaleError, validateTripForSale, lockAndCheckSeats } from '../lib/sales'
+ 
+ // ─── Validation ─────────────────────────────────────────
+@@ -28,7 +29,7 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
+     const dropoffPointId = parsed.data.dropoffPointId || undefined
+     const userId = req.userId!
+ 
+-    const schedule = await validateTripForSale({ scheduleId, seatNumbers, pickupPointId, dropoffPointId })
++    const schedule = await validateTripForSale({ channel: 'ONLINE', scheduleId, seatNumbers, pickupPointId, dropoffPointId })
+     const now = new Date()
+ 
+     const booking = await prisma.$transaction(async (tx) => {
+@@ -91,7 +92,7 @@ export const getMyBookings = async (req: AuthRequest, res: Response): Promise<vo
+       where: { userId },
+       include: {
+         schedule: {
+-          include: { route: true, bus: { include: { operator: true } } },
++          include: { route: true, bus: { include: { operator: PUBLIC_OPERATOR_FIELDS } } },
+         },
+         payment: true,
+       },
+@@ -119,7 +120,7 @@ export const getBooking = async (req: AuthRequest, res: Response): Promise<void>
+         pickupPoint: true,
+         dropoffPoint: true,
+         schedule: {
+-          include: { route: true, bus: { include: { operator: true } } },
++          include: { route: true, bus: { include: { operator: PUBLIC_OPERATOR_FIELDS } } },
+         },
+         payment: true,
+       },
+diff --git a/apps/api/src/controllers/counter.controller.ts b/apps/api/src/controllers/counter.controller.ts
+index a721126..a934f46 100644
+--- a/apps/api/src/controllers/counter.controller.ts
++++ b/apps/api/src/controllers/counter.controller.ts
+@@ -120,7 +120,7 @@ export const createCounterSale = async (req: AuthRequest, res: Response): Promis
+     const { scheduleId, seatNumbers } = input
+     const now = new Date()
+ 
+-    const schedule = await validateTripForSale({ scheduleId, seatNumbers, pickupPointId, dropoffPointId, operatorId, now })
++    const schedule = await validateTripForSale({ channel: 'COUNTER', scheduleId, seatNumbers, pickupPointId, dropoffPointId, operatorId, now })
+ 
+     // Link the ticket to the passenger's account when they have one, so it also
+     // shows in their My Bookings.
+diff --git a/apps/api/src/controllers/operator.controller.ts b/apps/api/src/controllers/operator.controller.ts
+index 897532f..7475866 100644
+--- a/apps/api/src/controllers/operator.controller.ts
++++ b/apps/api/src/controllers/operator.controller.ts
+@@ -28,7 +28,9 @@ export const getOperatorProfile = async (req: AuthRequest, res: Response): Promi
+       }
+     })
+ 
+-    res.json({ success: true, data: { operator } })
++    // The admin's private notes are not for the company
++    const { notes: _notes, ...visible } = operator ?? ({} as NonNullable<typeof operator>)
++    res.json({ success: true, data: { operator: operator ? visible : operator } })
+   } catch (error) {
+     console.error('GetOperatorProfile error:', error)
+     res.status(500).json({ success: false, error: 'Internal server error' })
+diff --git a/apps/api/src/controllers/schedule.controller.ts b/apps/api/src/controllers/schedule.controller.ts
+index 0dc6aa1..380b4be 100644
+--- a/apps/api/src/controllers/schedule.controller.ts
++++ b/apps/api/src/controllers/schedule.controller.ts
+@@ -7,6 +7,7 @@ import { scopeOf } from '../middleware/staff'
+ import { activeBookingFilter, releaseExpiredHolds } from '../lib/seats'
+ import { addisDayRange, isValidDateString } from '../lib/time'
+ import { maybeTopUp } from '../lib/recurring'
++import { PUBLIC_OPERATOR, PUBLIC_OPERATOR_FIELDS, isAdminRequest } from '../lib/visibility'
+ 
+ const createScheduleSchema = z.object({
+   routeId: z.string(),
+@@ -60,11 +61,13 @@ export const searchSchedules = async (req: Request, res: Response): Promise<void
+     if (busType && BUS_TYPES.includes(busType as BusTypeValue)) {
+       busFilter.busType = busType as BusTypeValue
+     }
+-    if (operator) {
+-      busFilter.operator = { companyName: { contains: operator, mode: 'insensitive' } }
++    // Suspended and demo companies are never shown to passengers
++    busFilter.operator = {
++      ...PUBLIC_OPERATOR,
++      ...(operator ? { companyName: { contains: operator, mode: 'insensitive' as const } } : {}),
+     }
+     if (operatorId) busFilter.operatorId = operatorId
+-    if (Object.keys(busFilter).length > 0) where.bus = busFilter
++    where.bus = busFilter
+ 
+     if (maxPrice !== undefined && Number.isFinite(maxPrice)) where.price = { lte: maxPrice }
+ 
+@@ -72,7 +75,7 @@ export const searchSchedules = async (req: Request, res: Response): Promise<void
+       where,
+       include: {
+         route: true,
+-        bus: { include: { operator: true } },
++        bus: { include: { operator: PUBLIC_OPERATOR_FIELDS } },
+         _count: { select: { bookings: true } },
+         // Seats held by paid bookings and unpaid bookings still inside their hold
+         bookings: {
+@@ -109,14 +112,17 @@ export const getAllSchedules = async (req: Request, res: Response): Promise<void
+   try {
+     const includePast = req.query.includePast === 'true'
+     const includeClosed = req.query.includeClosed === 'true'
++    // Only an admin can see suspended and demo companies' trips
++    const showHidden = req.query.includeHidden === 'true' && isAdminRequest(req)
+     const schedules = await prisma.schedule.findMany({
+       where: {
+         ...(includePast ? {} : { departureTime: { gte: new Date() } }),
+         ...(includeClosed ? {} : { status: 'OPEN' as const }),
++        ...(showHidden ? {} : { bus: { operator: PUBLIC_OPERATOR } }),
+       },
+       include: {
+         route: true,
+-        bus: { include: { operator: true } },
++        bus: { include: { operator: PUBLIC_OPERATOR_FIELDS } },
+         _count: { select: { bookings: true } },
+       },
+       orderBy: { departureTime: 'asc' },
+@@ -148,10 +154,22 @@ export const getScheduleById = async (req: Request, res: Response): Promise<void
+     }
+     const { bookings, ...rest } = schedule
+     const booked = bookings.reduce((n, b) => n + b.seatNumbers.length, 0)
++    const company = schedule.bus.operator
+     res.json({
+       success: true,
+       data: {
+-        schedule: { ...rest, availableSeats: Math.max(0, schedule.bus.totalSeats - booked), totalSeats: schedule.bus.totalSeats },
++        schedule: {
++          ...rest,
++          // Only the public company fields: never the commission rate or notes
++          bus: {
++            ...rest.bus,
++            operator: { id: company.id, companyName: company.companyName, licenseNo: company.licenseNo, phone: company.phone },
++          },
++          availableSeats: Math.max(0, schedule.bus.totalSeats - booked),
++          totalSeats: schedule.bus.totalSeats,
++          // Open trip of a company that is active and not a demo company
++          bookable: schedule.status === 'OPEN' && schedule.bus.operator.status === 'ACTIVE' && !schedule.bus.operator.isDemo,
++        },
+       },
+     })
+   } catch (error) {
+diff --git a/apps/api/src/index.ts b/apps/api/src/index.ts
+index 6018b9d..6ac9ad6 100644
+--- a/apps/api/src/index.ts
++++ b/apps/api/src/index.ts
+@@ -15,6 +15,7 @@ import paymentRoutes from './routes/payment.routes'
+ import counterRoutes from './routes/counter.routes'
+ import checkinRoutes from './routes/checkin.routes'
+ import ticketRoutes from './routes/ticket.routes'
++import adminRoutes from './routes/admin.routes'
+ import { maybeTopUp } from './lib/recurring'
+ 
+ // Load environment variables
+@@ -62,6 +63,7 @@ app.use('/api/v1/operator', operatorRoutes)
+ app.use('/api/v1/payments', paymentRoutes)
+ app.use('/api/v1/counter', counterRoutes)
+ app.use('/api/v1/tickets', ticketRoutes)
++app.use('/api/v1/admin', adminRoutes)
+ app.use('/api/v1/checkin', checkinRoutes)
+ // ─── Swagger Docs ────────────────────────────────────────
+ app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec))
+diff --git a/apps/api/src/lib/sales.ts b/apps/api/src/lib/sales.ts
+index 59f6369..c80537b 100644
+--- a/apps/api/src/lib/sales.ts
++++ b/apps/api/src/lib/sales.ts
+@@ -15,7 +15,11 @@ export class SaleError extends Error {
+   }
+ }
+ 
++export type SaleChannel = 'ONLINE' | 'COUNTER'
++
+ export interface TripRequest {
++  /** Who is selling: passengers online, or staff at the counter. */
++  channel: SaleChannel
+   scheduleId: string
+   seatNumbers: string[]
+   pickupPointId?: string
+@@ -31,7 +35,7 @@ export interface TripRequest {
+  * the seats exist, and the pickup / drop-off points are valid.
+  */
+ export async function validateTripForSale(req: TripRequest, client: PrismaClient = defaultPrisma) {
+-  const { scheduleId, seatNumbers, pickupPointId, dropoffPointId, operatorId } = req
++  const { channel, scheduleId, seatNumbers, pickupPointId, dropoffPointId, operatorId } = req
+   const now = req.now ?? new Date()
+ 
+   if (new Set(seatNumbers).size !== seatNumbers.length) {
+@@ -40,12 +44,20 @@ export async function validateTripForSale(req: TripRequest, client: PrismaClient
+ 
+   const schedule = await client.schedule.findUnique({
+     where: { id: scheduleId },
+-    include: { bus: true },
++    include: { bus: { include: { operator: true } } },
+   })
+   // Another company's trip looks exactly like a trip that doesn't exist
+   if (!schedule || (operatorId && schedule.bus.operatorId !== operatorId)) {
+     throw new SaleError(404, 'Schedule not found')
+   }
++  // The platform admin can suspend a company, or mark it as a demo company
++  const company = schedule.bus.operator
++  if (company.status === 'SUSPENDED') {
++    throw new SaleError(409, 'This bus company is not taking bookings right now')
++  }
++  if (company.isDemo && channel === 'ONLINE') {
++    throw new SaleError(409, 'This is a demo company. Online booking is not open for it.')
++  }
+   if (schedule.status === 'CLOSED') {
+     throw new SaleError(409, 'This trip is closed and no longer takes bookings')
+   }
+diff --git a/apps/api/src/lib/staff.ts b/apps/api/src/lib/staff.ts
+index 7b8eec1..1c3c6e4 100644
+--- a/apps/api/src/lib/staff.ts
++++ b/apps/api/src/lib/staff.ts
+@@ -8,6 +8,8 @@ export interface StaffContext {
+   staffId: string
+   operatorId: string
+   role: StaffRoleValue
++  /** The company is suspended by the platform admin: staff may log in but not work. */
++  suspended: boolean
+ }
+ 
+ const isUniqueError = (e: unknown) => (e as { code?: string })?.code === 'P2002'
+@@ -28,6 +30,16 @@ export async function getStaffContext(
+   userId: string,
+   client: PrismaClient = defaultPrisma
+ ): Promise<StaffContext | null> {
++  const base = await findStaff(userId, client)
++  if (!base) return null
++  const operator = await client.operator.findUnique({ where: { id: base.operatorId }, select: { status: true } })
++  return { ...base, suspended: operator?.status === 'SUSPENDED' }
++}
++
++async function findStaff(
++  userId: string,
++  client: PrismaClient
++): Promise<Omit<StaffContext, 'suspended'> | null> {
+   const existing = await client.operatorStaff.findUnique({ where: { userId } })
+   if (existing) {
+     return existing.active
+@@ -61,5 +73,10 @@ export async function describeStaff(userId: string, client: PrismaClient = defau
+     where: { id: ctx.operatorId },
+     select: { companyName: true },
+   })
+-  return { role: ctx.role, operatorId: ctx.operatorId, companyName: operator?.companyName ?? '' }
++  return {
++    role: ctx.role,
++    operatorId: ctx.operatorId,
++    companyName: operator?.companyName ?? '',
++    suspended: ctx.suspended,
++  }
+ }
+diff --git a/apps/api/src/lib/visibility.ts b/apps/api/src/lib/visibility.ts
+new file mode 100644
+index 0000000..bf41c94
+--- /dev/null
++++ b/apps/api/src/lib/visibility.ts
+@@ -0,0 +1,31 @@
++import jwt from 'jsonwebtoken'
++import { Request } from 'express'
++
++/**
++ * Which companies passengers can see and book.
++ * Suspended companies and demo companies are hidden from the public.
++ */
++export const PUBLIC_OPERATOR = { status: 'ACTIVE', isDemo: false } as const
++
++/**
++ * True when the request carries an admin token. Only used to let the admin see
++ * hidden companies' trips in the admin pages: it unlocks nothing else.
++ */
++export function isAdminRequest(req: Request): boolean {
++  try {
++    const header = req.headers.authorization
++    if (!header?.startsWith('Bearer ')) return false
++    const payload = jwt.verify(header.slice(7), process.env.JWT_SECRET as string) as { role?: string }
++    return payload.role === 'ADMIN'
++  } catch {
++    return false
++  }
++}
++
++/**
++ * The only company fields passengers (and public pages) may receive. The full
++ * company record also holds the commission rate and the admin's private notes.
++ */
++export const PUBLIC_OPERATOR_FIELDS = {
++  select: { id: true, companyName: true, licenseNo: true, phone: true },
++} as const
+diff --git a/apps/api/src/middleware/admin.ts b/apps/api/src/middleware/admin.ts
+new file mode 100644
+index 0000000..fb78de2
+--- /dev/null
++++ b/apps/api/src/middleware/admin.ts
+@@ -0,0 +1,26 @@
++import { Response, NextFunction } from 'express'
++import { AuthRequest } from './auth'
++import { prisma } from '../lib/prisma'
++
++/**
++ * Only the platform admin. The role is re-read from the database on every call,
++ * because a login token stays valid for days after someone loses the role.
++ * Use after `authenticate`.
++ */
++export const requireAdmin = async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
++  try {
++    if (!req.userId) {
++      res.status(401).json({ success: false, error: 'No token provided' })
++      return
++    }
++    const user = await prisma.user.findUnique({ where: { id: req.userId }, select: { role: true } })
++    if (user?.role !== 'ADMIN') {
++      res.status(403).json({ success: false, error: 'Admin access required' })
++      return
++    }
++    next()
++  } catch (error) {
++    console.error('requireAdmin error:', error)
++    res.status(500).json({ success: false, error: 'Internal server error' })
++  }
++}
+diff --git a/apps/api/src/middleware/staff.ts b/apps/api/src/middleware/staff.ts
+index b1c99e6..02626e7 100644
+--- a/apps/api/src/middleware/staff.ts
++++ b/apps/api/src/middleware/staff.ts
+@@ -37,6 +37,14 @@ export const requireStaff =
+         res.status(403).json({ success: false, error: 'Operator staff access required' })
+         return
+       }
++      // A suspended company can't work at all: no portal, no counter sales, no check-in
++      if (ctx.suspended) {
++        res.status(403).json({
++          success: false,
++          error: "Your company's account is suspended. Please contact EthioBus.",
++        })
++        return
++      }
+       if (!roles.includes(ctx.role)) {
+         res.status(403).json({ success: false, error: 'Your role is not allowed to do this' })
+         return
+diff --git a/apps/api/src/routes/admin.routes.ts b/apps/api/src/routes/admin.routes.ts
+new file mode 100644
+index 0000000..a93e10e
+--- /dev/null
++++ b/apps/api/src/routes/admin.routes.ts
+@@ -0,0 +1,31 @@
++import { Router, IRouter } from 'express'
++import {
++  listOperators,
++  getOperator,
++  createOperator,
++  updateOperator,
++  suspendOperator,
++  reactivateOperator,
++  resetCompanyStaffPassword,
++  getAttention,
++  getDashboard,
++} from '../controllers/admin.controller'
++import { authenticate } from '../middleware/auth'
++import { requireAdmin } from '../middleware/admin'
++
++const router: IRouter = Router()
++
++// Platform admin only (re-checked in the database on every request)
++const admin = [authenticate, requireAdmin]
++
++router.get('/dashboard', ...admin, getDashboard)
++router.get('/attention', ...admin, getAttention)
++router.get('/operators', ...admin, listOperators)
++router.post('/operators', ...admin, createOperator)
++router.get('/operators/:id', ...admin, getOperator)
++router.patch('/operators/:id', ...admin, updateOperator)
++router.post('/operators/:id/suspend', ...admin, suspendOperator)
++router.post('/operators/:id/reactivate', ...admin, reactivateOperator)
++router.post('/operators/:id/staff/:staffId/password', ...admin, resetCompanyStaffPassword)
++
++export default router
+diff --git a/apps/api/tests/admin.db.test.ts b/apps/api/tests/admin.db.test.ts
+new file mode 100644
+index 0000000..833f339
+--- /dev/null
++++ b/apps/api/tests/admin.db.test.ts
+@@ -0,0 +1,471 @@
++/**
++ * Database tests for platform administration (Patch F1): creating companies,
++ * suspending them, demo companies, password resets, the dashboard and the
++ * "needs attention" list. Through the REAL routes over HTTP.
++ *
++ * Only run when TEST_DATABASE_URL is set; refuse to run against DATABASE_URL.
++ * They create their own rows (marked TEST-) and remove them afterwards.
++ */
++import { describe, it, expect, beforeAll, afterAll } from 'vitest'
++import dotenv from 'dotenv'
++import http from 'http'
++import type { AddressInfo } from 'net'
++import express from 'express'
++import jwt from 'jsonwebtoken'
++
++dotenv.config({ path: '../../.env' })
++const TEST_URL = process.env.TEST_DATABASE_URL
++const NORMAL_URL = process.env.DATABASE_URL
++
++if (TEST_URL && NORMAL_URL && TEST_URL === NORMAL_URL) {
++  throw new Error('TEST_DATABASE_URL is the same as DATABASE_URL. Use a separate database or Neon branch.')
++}
++if (TEST_URL) process.env.DATABASE_URL = TEST_URL
++process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-only-for-tests'
++
++type Prisma = typeof import('../src/lib/prisma').prisma
++let prisma: Prisma
++let server: http.Server
++let baseUrl = ''
++
++const tag = `TEST-${Date.now()}`
++let phoneCounter = 0
++const newPhone = () => `09${String((Date.now() % 1000000) * 100 + phoneCounter++).padStart(8, '0').slice(-8)}`
++let licenseCounter = 0
++const newLicense = () => `${tag}-L${licenseCounter++}`
++const token = (userId: string, role: string) => jwt.sign({ userId, role }, process.env.JWT_SECRET!)
++
++async function api(method: string, path: string, tok?: string, body?: unknown) {
++  const res = await fetch(`${baseUrl}${path}`, {
++    method,
++    headers: { 'Content-Type': 'application/json', ...(tok ? { Authorization: `Bearer ${tok}` } : {}) },
++    body: body === undefined ? undefined : JSON.stringify(body),
++  })
++  const json = await res.json().catch(() => ({}))
++  return { status: res.status, body: json as any }
++}
++
++const created = { users: new Set<string>(), operators: new Set<string>(), routes: [] as string[] }
++
++async function makeUser(label: string, role: 'CUSTOMER' | 'OPERATOR' | 'ADMIN', phone = newPhone()) {
++  const user = await prisma.user.create({ data: { name: `${tag} ${label}`, phone, password: 'x', role } })
++  created.users.add(user.id)
++  return { user, tok: token(user.id, role) }
++}
++
++/** A company created directly in the database, with a manager, seller and checker and one bus. */
++async function makeCompany(label: string, over: Record<string, unknown> = {}) {
++  const operator = await prisma.operator.create({
++    data: { companyName: `${tag} ${label}`, licenseNo: newLicense(), phone: '0900000000', ...over },
++  })
++  created.operators.add(operator.id)
++  const mk = async (role: 'MANAGER' | 'SELLER' | 'CHECKER') => {
++    const u = await makeUser(`${label} ${role}`, 'OPERATOR')
++    const staff = await prisma.operatorStaff.create({ data: { userId: u.user.id, operatorId: operator.id, role } })
++    return { ...u, staff }
++  }
++  const manager = await mk('MANAGER')
++  const seller = await mk('SELLER')
++  const checker = await mk('CHECKER')
++  const bus = await prisma.bus.create({ data: { operatorId: operator.id, plateNumber: `${tag}-${label}-1`, totalSeats: 10 } })
++  return { operator, manager, seller, checker, bus }
++}
++
++let route: any, admin: { user: any; tok: string }, customer: { user: any; tok: string }
++type Company = Awaited<ReturnType<typeof makeCompany>>
++let tripCounter = 0
++async function newTrip(c: Company, hoursAhead = 48) {
++  const dep = new Date(Date.now() + hoursAhead * 3600 * 1000 + tripCounter++ * 60000)
++  return prisma.schedule.create({
++    data: { routeId: route.id, busId: c.bus.id, departureTime: dep, arrivalTime: new Date(dep.getTime() + 7200000), price: 100 },
++  })
++}
++
++const searchFor = async (tripDate: Date) => {
++  const day = new Date(tripDate.getTime() + 3 * 3600000).toISOString().slice(0, 10) // Addis day
++  const out = await api('GET', `/api/v1/schedules/search?fromCity=${encodeURIComponent(route.fromCity)}&toCity=${encodeURIComponent(route.toCity)}&date=${day}`)
++  return out.body.data.schedules.map((s: any) => s.id) as string[]
++}
++
++describe.skipIf(!TEST_URL)('platform administration (database, real routes)', () => {
++  beforeAll(async () => {
++    ;({ prisma } = await import('../src/lib/prisma'))
++    const app = express()
++    app.use(express.json())
++    app.use('/api/v1/auth', (await import('../src/routes/auth.routes')).default)
++    app.use('/api/v1/admin', (await import('../src/routes/admin.routes')).default)
++    app.use('/api/v1/operator', (await import('../src/routes/operator.routes')).default)
++    app.use('/api/v1/schedules', (await import('../src/routes/schedule.routes')).default)
++    app.use('/api/v1/bookings', (await import('../src/routes/booking.routes')).default)
++    app.use('/api/v1/counter', (await import('../src/routes/counter.routes')).default)
++    app.use('/api/v1/checkin', (await import('../src/routes/checkin.routes')).default)
++    server = http.createServer(app)
++    await new Promise<void>((r) => server.listen(0, r))
++    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
++
++    admin = await makeUser('admin', 'ADMIN')
++    customer = await makeUser('passenger', 'CUSTOMER')
++    route = await prisma.route.create({ data: { fromCity: `${tag}-From`, toCity: `${tag}-To`, distanceKm: 100, estimatedDurationMin: 120 } })
++    created.routes.push(route.id)
++  })
++
++  afterAll(async () => {
++    await new Promise<void>((r) => (server ? server.close(() => r()) : r()))
++    if (prisma) {
++      // Companies made through the API have accounts we didn't track
++      const made = await prisma.user.findMany({ where: { name: { startsWith: tag } }, select: { id: true } })
++      made.forEach((u) => created.users.add(u.id))
++      const ops = await prisma.operator.findMany({ where: { companyName: { startsWith: tag } }, select: { id: true } })
++      ops.forEach((o) => created.operators.add(o.id))
++      const buses = await prisma.bus.findMany({ where: { operatorId: { in: [...created.operators] } }, select: { id: true } })
++      const trips = await prisma.schedule.findMany({ where: { busId: { in: buses.map((b) => b.id) } }, select: { id: true } })
++      const tripIds = trips.map((t) => t.id)
++      await prisma.payment.deleteMany({ where: { booking: { scheduleId: { in: tripIds } } } })
++      await prisma.booking.deleteMany({ where: { scheduleId: { in: tripIds } } })
++      await prisma.schedule.deleteMany({ where: { id: { in: tripIds } } })
++      await prisma.bus.deleteMany({ where: { id: { in: buses.map((b) => b.id) } } })
++      await prisma.route.deleteMany({ where: { id: { in: created.routes } } })
++      await prisma.operator.deleteMany({ where: { id: { in: [...created.operators] } } }) // staff rows cascade
++      await prisma.user.deleteMany({ where: { id: { in: [...created.users] } } })
++      await prisma.$disconnect()
++    }
++  })
++
++  // ─── Who may use the admin routes ───────────────────────
++  it('lets only the platform admin in, and checks the role in the database, not the token', async () => {
++    const co = await makeCompany('perm')
++    const paths = ['/api/v1/admin/dashboard', '/api/v1/admin/attention', '/api/v1/admin/operators']
++    for (const p of paths) {
++      expect((await api('GET', p)).status).toBe(401)
++      expect((await api('GET', p, customer.tok)).status).toBe(403)
++      expect((await api('GET', p, co.manager.tok)).status).toBe(403)
++      expect((await api('GET', p, co.seller.tok)).status).toBe(403)
++      expect((await api('GET', p, admin.tok)).status).toBe(200)
++    }
++    // A token that says ADMIN for an account that is not an admin in the database
++    const fake = token(customer.user.id, 'ADMIN')
++    expect((await api('GET', '/api/v1/admin/operators', fake)).status).toBe(403)
++    expect((await api('POST', '/api/v1/admin/operators', co.manager.tok, {})).status).toBe(403)
++    expect((await api('POST', `/api/v1/admin/operators/${co.operator.id}/suspend`, co.manager.tok, { reason: 'self' })).status).toBe(403)
++  })
++
++  // ─── Creating a company ─────────────────────────────────
++  it('creates a company with its first manager in one step, with 5% commission by default', async () => {
++    const managerPhone = newPhone()
++    const out = await api('POST', '/api/v1/admin/operators', admin.tok, {
++      companyName: `${tag} Selam Real`, licenseNo: newLicense(), phone: newPhone(),
++      managerName: `${tag} Manager One`, managerPhone, managerPassword: 'secret12',
++    })
++    expect(out.status).toBe(201)
++    const op = out.body.data.operator
++    expect(op).toMatchObject({ status: 'ACTIVE', isDemo: false, commissionPercent: 5, buses: 0, activeStaff: 1 })
++    expect(op.manager).toMatchObject({ phone: managerPhone })
++
++    // The manager can log in and is the manager of exactly this company
++    const login = await api('POST', '/api/v1/auth/login', undefined, { phone: managerPhone, password: 'secret12' })
++    expect(login.status).toBe(200)
++    expect(login.body.data.user.staff).toMatchObject({ role: 'MANAGER', operatorId: op.id, suspended: false })
++    const profile = await api('GET', '/api/v1/operator/profile', login.body.data.token)
++    expect(profile.body.data.operator.id).toBe(op.id)
++
++    const row = await prisma.user.findUniqueOrThrow({ where: { phone: managerPhone } })
++    expect(row.password).not.toBe('secret12') // stored hashed
++    expect(row.role).toBe('OPERATOR')
++  })
++
++  it('creates a company at 0% commission and as a demo company when asked', async () => {
++    const out = await api('POST', '/api/v1/admin/operators', admin.tok, {
++      companyName: `${tag} Pilot`, licenseNo: newLicense(), phone: newPhone(), commissionPercent: 0, isDemo: true, notes: 'first pilot',
++      managerName: `${tag} Pilot Manager`, managerPhone: newPhone(), managerPassword: 'secret12',
++    })
++    expect(out.status).toBe(201)
++    expect(out.body.data.operator).toMatchObject({ commissionPercent: 0, isDemo: true, notes: 'first pilot' })
++  })
++
++  it('refuses bad input, duplicates and taking over an existing account, and creates nothing then', async () => {
++    const base = () => ({
++      companyName: `${tag} Bad`, licenseNo: newLicense(), phone: newPhone(),
++      managerName: `${tag} Bad Manager`, managerPhone: newPhone(), managerPassword: 'secret12',
++    })
++    const countBefore = await prisma.operator.count({ where: { companyName: `${tag} Bad` } })
++
++    expect((await api('POST', '/api/v1/admin/operators', admin.tok, { ...base(), managerPhone: '12345' })).status).toBe(400)
++    expect((await api('POST', '/api/v1/admin/operators', admin.tok, { ...base(), phone: 'abc' })).status).toBe(400)
++    expect((await api('POST', '/api/v1/admin/operators', admin.tok, { ...base(), managerPassword: '123' })).status).toBe(400)
++    expect((await api('POST', '/api/v1/admin/operators', admin.tok, { ...base(), companyName: '' })).status).toBe(400)
++    expect((await api('POST', '/api/v1/admin/operators', admin.tok, { ...base(), commissionPercent: -1 })).status).toBe(400)
++    expect((await api('POST', '/api/v1/admin/operators', admin.tok, { ...base(), commissionPercent: 80 })).status).toBe(400)
++
++    // The manager phone already belongs to a passenger (also in the +251 form): never taken over
++    const plus = `+251${customer.user.phone.slice(1)}`
++    const taken = await api('POST', '/api/v1/admin/operators', admin.tok, { ...base(), managerPhone: plus })
++    expect(taken.status).toBe(409)
++    expect((await api('POST', '/api/v1/admin/operators', admin.tok, { ...base(), managerPhone: customer.user.phone })).status).toBe(409)
++
++    // Duplicate license number
++    const existing = await makeCompany('dup')
++    const dup = await api('POST', '/api/v1/admin/operators', admin.tok, { ...base(), licenseNo: existing.operator.licenseNo })
++    expect(dup.status).toBe(409)
++
++    expect(await prisma.operator.count({ where: { companyName: `${tag} Bad` } })).toBe(countBefore)
++    expect(await prisma.user.count({ where: { name: `${tag} Bad Manager` } })).toBe(0)
++  })
++
++  it('does not let a new company phone number hand the company to an old operator account', async () => {
++    // An old-style operator: role OPERATOR, no staff record, linked only by phone number
++    const legacy = await makeUser('legacy operator', 'OPERATOR')
++    const out = await api('POST', '/api/v1/admin/operators', admin.tok, {
++      companyName: `${tag} Hijack`, licenseNo: newLicense(), phone: legacy.user.phone,
++      managerName: `${tag} Real Manager`, managerPhone: newPhone(), managerPassword: 'secret12',
++    })
++    expect(out.status).toBe(409)
++    expect(await prisma.operator.count({ where: { companyName: `${tag} Hijack` } })).toBe(0)
++    // And the old account still has no company
++    expect((await api('GET', '/api/v1/operator/profile', legacy.tok)).status).toBe(403)
++
++    // Using the new manager's own number as the company phone is fine
++    const own = newPhone()
++    const ok = await api('POST', '/api/v1/admin/operators', admin.tok, {
++      companyName: `${tag} Own Phone`, licenseNo: newLicense(), phone: own,
++      managerName: `${tag} Own Manager`, managerPhone: own, managerPassword: 'secret12',
++    })
++    expect(ok.status).toBe(201)
++  })
++
++  // ─── Editing ────────────────────────────────────────────
++  it('edits company details, commission and the demo flag', async () => {
++    const co = await makeCompany('edit')
++    const out = await api('PATCH', `/api/v1/admin/operators/${co.operator.id}`, admin.tok, { commissionPercent: 0, isDemo: true, companyName: `${tag} Renamed`, notes: 'x' })
++    expect(out.status).toBe(200)
++    expect(out.body.data.operator).toMatchObject({ commissionPercent: 0, isDemo: true, companyName: `${tag} Renamed`, notes: 'x' })
++    expect((await api('PATCH', `/api/v1/admin/operators/${co.operator.id}`, admin.tok, {})).status).toBe(400)
++    expect((await api('PATCH', `/api/v1/admin/operators/${co.operator.id}`, admin.tok, { commissionPercent: 99 })).status).toBe(400)
++    expect((await api('PATCH', '/api/v1/admin/operators/nope', admin.tok, { isDemo: false })).status).toBe(404)
++    const other = await makeCompany('edit2')
++    expect((await api('PATCH', `/api/v1/admin/operators/${co.operator.id}`, admin.tok, { licenseNo: other.operator.licenseNo })).status).toBe(409)
++  })
++
++  it("never shows the commission rate or the admin's notes to passengers", async () => {
++    const co = await makeCompany('private', { commissionPercent: 3.5, notes: 'secret admin note' })
++    const trip = await newTrip(co)
++    const everything = JSON.stringify([
++      (await api('GET', `/api/v1/schedules/search?fromCity=${encodeURIComponent(route.fromCity)}&toCity=${encodeURIComponent(route.toCity)}`)).body,
++      (await api('GET', '/api/v1/schedules')).body,
++      (await api('GET', `/api/v1/schedules/${trip.id}`)).body,
++    ])
++    expect(everything).toContain(co.operator.companyName) // the trip is listed...
++    expect(everything).not.toContain('commissionPercent')
++    expect(everything).not.toContain('secret admin note')
++    expect(everything).not.toContain('suspendedReason')
++    // ...and the company's own profile hides the admin's note too
++    const profile = await api('GET', '/api/v1/operator/profile', co.manager.tok)
++    expect(JSON.stringify(profile.body)).not.toContain('secret admin note')
++    expect(profile.body.data.operator.commissionPercent).toBe(3.5)
++  })
++
++  // ─── Suspending ─────────────────────────────────────────
++  it('suspends a company: staff are stopped, its trips vanish and nobody can book it; reactivating restores it', async () => {
++    const bcrypt = (await import('bcryptjs')).default
++    const co = await makeCompany('susp')
++    await prisma.user.update({ where: { id: co.manager.user.id }, data: { password: await bcrypt.hash('susp-pass1', 4) } })
++    const trip = await newTrip(co)
++    expect(await searchFor(trip.departureTime)).toContain(trip.id)
++    expect((await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: ['01'] })).status).toBe(201)
++
++    expect((await api('POST', `/api/v1/admin/operators/${co.operator.id}/suspend`, admin.tok, {})).status).toBe(400) // reason needed
++    const s = await api('POST', `/api/v1/admin/operators/${co.operator.id}/suspend`, admin.tok, { reason: 'License expired' })
++    expect(s.status).toBe(200)
++    expect((await api('POST', `/api/v1/admin/operators/${co.operator.id}/suspend`, admin.tok, { reason: 'again' })).status).toBe(409)
++
++    // Every kind of staff is stopped at once, with a clear message
++    for (const [who, path] of [
++      [co.manager, '/api/v1/operator/buses'],
++      [co.seller, '/api/v1/counter/sales'],
++      [co.checker, '/api/v1/checkin/trips'],
++    ] as const) {
++      const out = await api('GET', path, who.tok)
++      expect(out.status).toBe(403)
++      expect(out.body.error).toMatch(/suspended/i)
++    }
++    // They can still log in, and the web app is told why they can't work
++    const login = await api('POST', '/api/v1/auth/login', undefined, { phone: co.manager.user.phone, password: 'susp-pass1' })
++    expect(login.status).toBe(200)
++    expect(login.body.data.user.staff).toMatchObject({ role: 'MANAGER', suspended: true })
++
++    // Passengers: hidden from search and the public list, and no new bookings
++    expect(await searchFor(trip.departureTime)).not.toContain(trip.id)
++    const list = await api('GET', '/api/v1/schedules')
++    expect(list.body.data.schedules.map((x: any) => x.id)).not.toContain(trip.id)
++    const refused = await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: ['02'] })
++    expect(refused.status).toBe(409)
++    expect(refused.body.error).toMatch(/not taking bookings/i)
++    expect((await api('GET', `/api/v1/schedules/${trip.id}`)).body.data.schedule.bookable).toBe(false)
++    // The earlier booking is untouched
++    expect(await prisma.booking.count({ where: { scheduleId: trip.id, status: 'PENDING' } })).toBe(1)
++
++    // The admin still sees the trip
++    const adminList = await api('GET', '/api/v1/schedules?includeHidden=true', admin.tok)
++    expect(adminList.body.data.schedules.map((x: any) => x.id)).toContain(trip.id)
++    const asPublic = await api('GET', '/api/v1/schedules?includeHidden=true')
++    expect(asPublic.body.data.schedules.map((x: any) => x.id)).not.toContain(trip.id)
++
++    const r = await api('POST', `/api/v1/admin/operators/${co.operator.id}/reactivate`, admin.tok)
++    expect(r.status).toBe(200)
++    expect((await api('POST', `/api/v1/admin/operators/${co.operator.id}/reactivate`, admin.tok)).status).toBe(409)
++    expect(await searchFor(trip.departureTime)).toContain(trip.id)
++    expect((await api('GET', '/api/v1/operator/buses', co.manager.tok)).status).toBe(200)
++    expect((await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: ['03'] })).status).toBe(201)
++  })
++
++  it('blocks counter sales for a suspended company even if the seller got past the staff check', async () => {
++    const { validateTripForSale, SaleError } = await import('../src/lib/sales')
++    const co = await makeCompany('susp2')
++    const trip = await newTrip(co)
++    await prisma.operator.update({ where: { id: co.operator.id }, data: { status: 'SUSPENDED' } })
++    await expect(
++      validateTripForSale({ channel: 'COUNTER', scheduleId: trip.id, seatNumbers: ['01'], operatorId: co.operator.id })
++    ).rejects.toBeInstanceOf(SaleError)
++  })
++
++  it('stops a suspension of a company that does not exist, and a missing id', async () => {
++    expect((await api('POST', '/api/v1/admin/operators/nope/suspend', admin.tok, { reason: 'test reason' })).status).toBe(404)
++    expect((await api('POST', '/api/v1/admin/operators/nope/reactivate', admin.tok)).status).toBe(404)
++    expect((await api('GET', '/api/v1/admin/operators/nope', admin.tok)).status).toBe(404)
++  })
++
++  // ─── Demo companies ─────────────────────────────────────
++  it('hides a demo company from passengers and refuses online bookings, but still allows counter sales', async () => {
++    const co = await makeCompany('demo', { isDemo: true })
++    const trip = await newTrip(co)
++    expect(await searchFor(trip.departureTime)).not.toContain(trip.id)
++    expect((await api('GET', '/api/v1/schedules')).body.data.schedules.map((x: any) => x.id)).not.toContain(trip.id)
++    const online = await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: ['01'] })
++    expect(online.status).toBe(409)
++    expect(online.body.error).toMatch(/demo/i)
++    expect((await api('GET', `/api/v1/schedules/${trip.id}`)).body.data.schedule.bookable).toBe(false)
++
++    // Staff can still rehearse selling at the counter
++    const sale = await api('POST', '/api/v1/counter/sales', co.seller.tok, {
++      scheduleId: trip.id, seatNumbers: ['01'], passengerName: 'Test Passenger', passengerPhone: newPhone(), method: 'CASH',
++    })
++    expect(sale.status).toBe(201)
++
++    // Switching the flag off makes it a normal company again
++    await api('PATCH', `/api/v1/admin/operators/${co.operator.id}`, admin.tok, { isDemo: false })
++    expect(await searchFor(trip.departureTime)).toContain(trip.id)
++    expect((await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: ['02'] })).status).toBe(201)
++  })
++
++  // ─── Passwords ──────────────────────────────────────────
++  it("lets the admin reset a manager's password, and only for staff of that company", async () => {
++    const bcrypt = (await import('bcryptjs')).default
++    const a = await makeCompany('pw-a')
++    const b = await makeCompany('pw-b')
++    await prisma.user.update({ where: { id: a.manager.user.id }, data: { password: await bcrypt.hash('oldpass1', 4) } })
++    expect((await api('POST', '/api/v1/auth/login', undefined, { phone: a.manager.user.phone, password: 'oldpass1' })).status).toBe(200)
++
++    const out = await api('POST', `/api/v1/admin/operators/${a.operator.id}/staff/${a.manager.staff.id}/password`, admin.tok, { password: 'newpass99' })
++    expect(out.status).toBe(200)
++    expect((await api('POST', '/api/v1/auth/login', undefined, { phone: a.manager.user.phone, password: 'oldpass1' })).status).toBe(401)
++    expect((await api('POST', '/api/v1/auth/login', undefined, { phone: a.manager.user.phone, password: 'newpass99' })).status).toBe(200)
++
++    expect((await api('POST', `/api/v1/admin/operators/${a.operator.id}/staff/${a.manager.staff.id}/password`, admin.tok, { password: '123' })).status).toBe(400)
++    // company B's manager can't be reached through company A's URL
++    expect((await api('POST', `/api/v1/admin/operators/${a.operator.id}/staff/${b.manager.staff.id}/password`, admin.tok, { password: 'newpass99' })).status).toBe(404)
++    // and nobody but the admin can use it
++    expect((await api('POST', `/api/v1/admin/operators/${a.operator.id}/staff/${a.seller.staff.id}/password`, a.manager.tok, { password: 'newpass99' })).status).toBe(403)
++  })
++
++  // ─── Lists, dashboard and attention ─────────────────────
++  it('lists companies with their manager, buses, trips and last-30-day sales', async () => {
++    const co = await makeCompany('list')
++    const trip = await newTrip(co)
++    await api('POST', '/api/v1/counter/sales', co.seller.tok, {
++      scheduleId: trip.id, seatNumbers: ['01', '02'], passengerName: 'Walk In', passengerPhone: newPhone(), method: 'CASH',
++    })
++    const list = await api('GET', '/api/v1/admin/operators', admin.tok)
++    const row = list.body.data.operators.find((o: any) => o.id === co.operator.id)
++    expect(row).toMatchObject({ buses: 1, activeStaff: 3, upcomingTrips: 1, status: 'ACTIVE', commissionPercent: 5 })
++    expect(row.manager.phone).toBe(co.manager.user.phone)
++    expect(row.counter30).toEqual({ tickets: 1, total: 200 })
++    expect(row.online30).toEqual({ tickets: 0, total: 0 })
++
++    const detail = await api('GET', `/api/v1/admin/operators/${co.operator.id}`, admin.tok)
++    expect(detail.body.data.operator.staff).toHaveLength(3)
++    expect(detail.body.data.operator.staff.map((s: any) => s.role).sort()).toEqual(['CHECKER', 'MANAGER', 'SELLER'])
++    expect(JSON.stringify(detail.body)).not.toContain('"password"')
++  })
++
++  it('shows a dashboard that leaves demo companies out and copes with walk-in bookings', async () => {
++    const before = (await api('GET', '/api/v1/admin/dashboard', admin.tok)).body.data
++    const real = await makeCompany('dash-real')
++    const demo = await makeCompany('dash-demo', { isDemo: true })
++    const realTrip = await newTrip(real)
++    const demoTrip = await newTrip(demo)
++    const walkIn = (trip: any) => api('POST', '/api/v1/counter/sales', real.seller.tok, {
++      scheduleId: trip.id, seatNumbers: ['01'], passengerName: 'Dash Walker', passengerPhone: newPhone(), method: 'CASH',
++    })
++    expect((await walkIn(realTrip)).status).toBe(201)
++    await api('POST', '/api/v1/counter/sales', demo.seller.tok, {
++      scheduleId: demoTrip.id, seatNumbers: ['01'], passengerName: 'Demo Walker', passengerPhone: newPhone(), method: 'CASH',
++    })
++    // An online confirmed booking
++    const online = await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: realTrip.id, seatNumbers: ['05'] })
++    await prisma.booking.update({ where: { id: online.body.data.booking.id }, data: { status: 'CONFIRMED' } })
++
++    const after = (await api('GET', '/api/v1/admin/dashboard', admin.tok)).body.data
++    expect(after.today.counter.tickets - before.today.counter.tickets).toBe(1) // the demo sale is not counted
++    expect(after.today.counter.total - before.today.counter.total).toBe(100)
++    expect(after.today.online.tickets - before.today.online.tickets).toBe(1)
++    expect(after.last30.online.total - before.last30.online.total).toBe(100)
++    expect(after.companies.demo).toBeGreaterThanOrEqual(1)
++    expect(after.passengers).toBeGreaterThanOrEqual(1)
++    expect(after.upcomingTrips - before.upcomingTrips).toBe(1) // the demo trip is not counted
++    // The walk-in booking (no account) shows with its own name
++    const names = after.recentBookings.map((b: any) => b.passengerName)
++    expect(names).toContain('Dash Walker')
++    expect(after.recentBookings.every((b: any) => b.companyName !== demo.operator.companyName)).toBe(true)
++  })
++
++  it('lists what needs attention: paid-but-cancelled bookings, companies without a manager, buses or trips', async () => {
++    const noManager = await makeCompany('att-nomgr')
++    await prisma.operatorStaff.update({ where: { id: noManager.manager.staff.id }, data: { active: false } })
++    const noBus = await prisma.operator.create({ data: { companyName: `${tag} att-nobus`, licenseNo: newLicense(), phone: '0900000000' } })
++    created.operators.add(noBus.id)
++    await prisma.operatorStaff.create({ data: { userId: (await makeUser('att-nobus manager', 'OPERATOR')).user.id, operatorId: noBus.id, role: 'MANAGER' } })
++    const noTrips = await makeCompany('att-notrips') // has a bus, no trips
++    const suspended = await makeCompany('att-susp', { status: 'SUSPENDED', suspendedReason: 'overdue' })
++    const demo = await makeCompany('att-demo', { isDemo: true }) // not expected to be complete
++
++    // A passenger paid online but the seat was lost
++    const refundCo = await makeCompany('att-refund')
++    const trip = await newTrip(refundCo)
++    const lost = await prisma.booking.create({
++      data: {
++        userId: customer.user.id, scheduleId: trip.id, seatNumbers: ['01'], totalPrice: 250, status: 'CANCELLED',
++        qrCode: `${tag}-qr-lost`, payment: { create: { amount: 250, method: 'TELEBIRR', status: 'SUCCESS' } },
++      },
++    })
++
++    const items = (await api('GET', '/api/v1/admin/attention', admin.tok)).body.data.items as any[]
++    const has = (kind: string, operatorId: string) => items.some((i) => i.kind === kind && i.operatorId === operatorId)
++    expect(items.some((i) => i.kind === 'REFUND_NEEDED' && i.bookingId === lost.id)).toBe(true)
++    expect(has('NO_MANAGER', noManager.operator.id)).toBe(true)
++    expect(has('NO_BUSES', noBus.id)).toBe(true)
++    expect(has('NO_UPCOMING_TRIPS', noTrips.operator.id)).toBe(true)
++    expect(has('SUSPENDED', suspended.operator.id)).toBe(true)
++    expect(items.some((i) => i.operatorId === demo.operator.id)).toBe(false)
++    // A company with trips and a manager has nothing to report
++    expect(items.some((i) => i.operatorId === refundCo.operator.id && i.kind !== 'REFUND_NEEDED')).toBe(false)
++    // Most urgent first
++    const rank = { high: 0, medium: 1, info: 2 } as Record<string, number>
++    const ranks = items.map((i) => rank[i.severity])
++    expect(ranks).toEqual([...ranks].sort((a, b) => a - b))
++    // A cancelled, unpaid booking is not a refund
++    const unpaid = await prisma.booking.create({
++      data: { userId: customer.user.id, scheduleId: trip.id, seatNumbers: ['02'], totalPrice: 100, status: 'CANCELLED', qrCode: `${tag}-qr-unpaid` },
++    })
++    const again = (await api('GET', '/api/v1/admin/attention', admin.tok)).body.data.items as any[]
++    expect(again.some((i) => i.bookingId === unpaid.id)).toBe(false)
++  })
++})
+diff --git a/apps/web/src/app/admin/companies/[id]/page.tsx b/apps/web/src/app/admin/companies/[id]/page.tsx
+new file mode 100644
+index 0000000..9fe699a
+--- /dev/null
++++ b/apps/web/src/app/admin/companies/[id]/page.tsx
+@@ -0,0 +1,188 @@
++'use client'
++
++import { useCallback, useEffect, useState } from 'react'
++import { useParams } from 'next/navigation'
++import Link from 'next/link'
++import { api } from '@/lib/api'
++import { Company, errorOf } from '@/lib/admin'
++import { formatPrice } from '@bus/utils'
++import { ArrowLeft, KeyRound, PauseCircle, PlayCircle } from 'lucide-react'
++import toast from 'react-hot-toast'
++
++interface StaffRow { id: string; role: 'MANAGER' | 'SELLER' | 'CHECKER'; active: boolean; name: string; phone: string }
++type Detail = Company & { pickupPoints: number; staff: StaffRow[] }
++
++const ROLE_LABEL = { MANAGER: 'Manager', SELLER: 'Counter seller', CHECKER: 'Ticket checker' }
++const label: React.CSSProperties = { display: 'block', fontSize: '12px', fontWeight: 600, color: '#555', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }
++const input: React.CSSProperties = { width: '100%', border: '1px solid #E5E5E5', borderRadius: '10px', padding: '11px 14px', fontSize: '14px', outline: 'none', background: 'white', boxSizing: 'border-box' }
++const box: React.CSSProperties = { background: 'white', border: '1px solid #F0F0F0', borderRadius: '16px', padding: '22px', marginBottom: '20px' }
++
++export default function CompanyDetailPage() {
++  const { id } = useParams<{ id: string }>()
++  const [company, setCompany] = useState<Detail | null>(null)
++  const [loading, setLoading] = useState(true)
++  const [form, setForm] = useState({ companyName: '', licenseNo: '', phone: '', commissionPercent: '5', isDemo: false, notes: '' })
++  const [saving, setSaving] = useState(false)
++
++  const load = useCallback(async () => {
++    try {
++      const res = await api.get(`/admin/operators/${id}`)
++      const c: Detail = res.data.data.operator
++      setCompany(c)
++      setForm({
++        companyName: c.companyName, licenseNo: c.licenseNo, phone: c.phone,
++        commissionPercent: String(c.commissionPercent), isDemo: c.isDemo, notes: c.notes ?? '',
++      })
++    } catch (err) {
++      toast.error(errorOf(err, 'Failed to load the company'))
++    } finally {
++      setLoading(false)
++    }
++  }, [id])
++
++  useEffect(() => { load() }, [load])
++
++  const save = async (e: React.FormEvent) => {
++    e.preventDefault()
++    setSaving(true)
++    try {
++      await api.patch(`/admin/operators/${id}`, {
++        companyName: form.companyName, licenseNo: form.licenseNo, phone: form.phone,
++        commissionPercent: Number(form.commissionPercent), isDemo: form.isDemo, notes: form.notes || null,
++      })
++      toast.success('Saved')
++      load()
++    } catch (err) {
++      toast.error(errorOf(err, 'Failed to save'))
++    } finally {
++      setSaving(false)
++    }
++  }
++
++  const suspend = async () => {
++    const reason = window.prompt('Suspend this company? Its staff are stopped, its trips are hidden and nobody can book it. Existing bookings stay. Reason:')
++    if (!reason) return
++    try {
++      await api.post(`/admin/operators/${id}/suspend`, { reason })
++      toast.success('Company suspended')
++      load()
++    } catch (err) {
++      toast.error(errorOf(err, 'Failed to suspend'))
++    }
++  }
++
++  const reactivate = async () => {
++    if (!confirm('Reactivate this company?')) return
++    try {
++      await api.post(`/admin/operators/${id}/reactivate`)
++      toast.success('Company reactivated')
++      load()
++    } catch (err) {
++      toast.error(errorOf(err, 'Failed to reactivate'))
++    }
++  }
++
++  const resetPassword = async (s: StaffRow) => {
++    const password = window.prompt(`New password for ${s.name} (at least 6 characters). Tell them in person or by phone:`)
++    if (!password) return
++    try {
++      await api.post(`/admin/operators/${id}/staff/${s.id}/password`, { password })
++      toast.success('Password changed')
++    } catch (err) {
++      toast.error(errorOf(err, 'Failed to change the password'))
++    }
++  }
++
++  if (loading) return <p style={{ color: '#999' }}>Loading...</p>
++  if (!company) return <p style={{ color: '#999' }}>Company not found.</p>
++  const suspended = company.status === 'SUSPENDED'
++
++  return (
++    <div>
++      <Link href="/admin/companies" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#666', textDecoration: 'none', marginBottom: '16px' }}>
++        <ArrowLeft size={14} /> All companies
++      </Link>
++
++      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px', flexWrap: 'wrap', marginBottom: '20px' }}>
++        <div>
++          <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#1a1a1a' }}>{company.companyName}</h1>
++          <p style={{ fontSize: '13px', color: '#999', marginTop: '4px' }}>
++            {company.buses} buses · {company.upcomingTrips} upcoming trips · {company.pickupPoints} pickup points
++          </p>
++        </div>
++        {suspended ? (
++          <button onClick={reactivate} style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#2E8B57', color: 'white', border: 'none', padding: '11px 20px', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>
++            <PlayCircle size={16} /> Reactivate
++          </button>
++        ) : (
++          <button onClick={suspend} style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#FFF8E5', color: '#9A6B00', border: '1px solid #F0DDA8', padding: '11px 20px', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>
++            <PauseCircle size={16} /> Suspend
++          </button>
++        )}
++      </div>
++
++      {suspended && (
++        <div style={{ background: '#FFF8E5', border: '1px solid #F0DDA8', color: '#7A5600', borderRadius: '12px', padding: '14px 18px', marginBottom: '20px', fontSize: '14px' }}>
++          <strong>Suspended.</strong> {company.suspendedReason}
++        </div>
++      )}
++
++      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px', marginBottom: '20px' }}>
++        {[
++          ['Online sales, 30 days', company.online30, '#2E8B57'],
++          ['Counter sales, 30 days', company.counter30, '#D4A017'],
++        ].map(([title, t, color]) => (
++          <div key={title as string} style={{ background: 'white', border: '1px solid #F0F0F0', borderRadius: '14px', padding: '16px' }}>
++            <div style={{ fontSize: '12px', color: '#999' }}>{title as string}</div>
++            <div style={{ fontSize: '22px', fontWeight: 700, color: color as string, marginTop: '4px' }}>{formatPrice((t as Company['online30']).total)}</div>
++            <div style={{ fontSize: '12px', color: '#999' }}>{(t as Company['online30']).tickets} tickets</div>
++          </div>
++        ))}
++        <div style={{ background: 'white', border: '1px solid #F0F0F0', borderRadius: '14px', padding: '16px' }}>
++          <div style={{ fontSize: '12px', color: '#999' }}>Commission on online sales</div>
++          <div style={{ fontSize: '22px', fontWeight: 700, marginTop: '4px' }}>{company.commissionPercent}%</div>
++          <div style={{ fontSize: '12px', color: '#999' }}>Counter sales carry none</div>
++        </div>
++      </div>
++
++      <form onSubmit={save} style={box}>
++        <h2 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>Company details</h2>
++        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', marginBottom: '16px' }}>
++          <div><label style={label}>Company name</label><input style={input} value={form.companyName} onChange={(e) => setForm({ ...form, companyName: e.target.value })} required /></div>
++          <div><label style={label}>License number</label><input style={input} value={form.licenseNo} onChange={(e) => setForm({ ...form, licenseNo: e.target.value })} required /></div>
++          <div><label style={label}>Company phone</label><input style={input} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} required /></div>
++          <div><label style={label}>Commission on online sales (%)</label><input style={input} type="number" min="0" max="50" step="0.5" value={form.commissionPercent} onChange={(e) => setForm({ ...form, commissionPercent: e.target.value })} required /></div>
++        </div>
++        <div style={{ marginBottom: '16px' }}>
++          <label style={label}>Notes (private)</label>
++          <input style={input} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
++        </div>
++        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: '#555', marginBottom: '16px', cursor: 'pointer' }}>
++          <input type="checkbox" checked={form.isDemo} onChange={(e) => setForm({ ...form, isDemo: e.target.checked })} />
++          Demo company (hidden from passengers, no online bookings)
++        </label>
++        <button type="submit" disabled={saving}
++          style={{ background: saving ? '#999' : '#C0392B', color: 'white', border: 'none', padding: '11px 24px', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer' }}>
++          {saving ? 'Saving...' : 'Save changes'}
++        </button>
++      </form>
++
++      <div style={box}>
++        <h2 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '4px' }}>Staff</h2>
++        <p style={{ fontSize: '12px', color: '#999', marginBottom: '14px' }}>The company's managers add and remove their own staff. You can reset anyone's password, including a manager's.</p>
++        {company.staff.map((s) => (
++          <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap', padding: '12px 0', borderTop: '1px solid #F5F5F5', opacity: s.active ? 1 : 0.55 }}>
++            <div>
++              <div style={{ fontSize: '14px', fontWeight: 600 }}>{s.name}</div>
++              <div style={{ fontSize: '12px', color: '#999' }}>{ROLE_LABEL[s.role]} · {s.phone}{s.active ? '' : ' · removed'}</div>
++            </div>
++            <button onClick={() => resetPassword(s)}
++              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', background: '#F5F5F5', color: '#555', border: 'none', padding: '8px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}>
++              <KeyRound size={13} /> Reset password
++            </button>
++          </div>
++        ))}
++      </div>
++    </div>
++  )
++}
+diff --git a/apps/web/src/app/admin/companies/page.tsx b/apps/web/src/app/admin/companies/page.tsx
+new file mode 100644
+index 0000000..92c7242
+--- /dev/null
++++ b/apps/web/src/app/admin/companies/page.tsx
+@@ -0,0 +1,144 @@
++'use client'
++
++import { useCallback, useEffect, useState } from 'react'
++import Link from 'next/link'
++import { api } from '@/lib/api'
++import { Company, errorOf } from '@/lib/admin'
++import { Plus, X } from 'lucide-react'
++import { formatPrice } from '@bus/utils'
++import toast from 'react-hot-toast'
++
++const label: React.CSSProperties = { display: 'block', fontSize: '12px', fontWeight: 600, color: '#555', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }
++const input: React.CSSProperties = { width: '100%', border: '1px solid #E5E5E5', borderRadius: '10px', padding: '11px 14px', fontSize: '14px', outline: 'none', background: 'white', boxSizing: 'border-box' }
++
++const empty = {
++  companyName: '', licenseNo: '', phone: '',
++  managerName: '', managerPhone: '', managerPassword: '',
++  commissionPercent: '5', isDemo: false, notes: '',
++}
++
++const badge = (text: string, bg: string, color: string) => (
++  <span style={{ fontSize: '11px', fontWeight: 600, padding: '3px 9px', borderRadius: '20px', background: bg, color, marginRight: '6px' }}>{text}</span>
++)
++
++export default function CompaniesPage() {
++  const [companies, setCompanies] = useState<Company[]>([])
++  const [loading, setLoading] = useState(true)
++  const [showForm, setShowForm] = useState(false)
++  const [form, setForm] = useState(empty)
++  const [saving, setSaving] = useState(false)
++
++  const load = useCallback(async () => {
++    try {
++      const res = await api.get('/admin/operators')
++      setCompanies(res.data.data.operators)
++    } catch (err) {
++      toast.error(errorOf(err, 'Failed to load companies'))
++    } finally {
++      setLoading(false)
++    }
++  }, [])
++
++  useEffect(() => { load() }, [load])
++
++  const set = (k: keyof typeof empty, v: string | boolean) => setForm((f) => ({ ...f, [k]: v }))
++
++  const submit = async (e: React.FormEvent) => {
++    e.preventDefault()
++    setSaving(true)
++    try {
++      await api.post('/admin/operators', {
++        companyName: form.companyName, licenseNo: form.licenseNo, phone: form.phone,
++        managerName: form.managerName, managerPhone: form.managerPhone, managerPassword: form.managerPassword,
++        commissionPercent: Number(form.commissionPercent), isDemo: form.isDemo, notes: form.notes || undefined,
++      })
++      toast.success('Company created. Give the manager their phone number and password.')
++      setForm(empty)
++      setShowForm(false)
++      load()
++    } catch (err) {
++      toast.error(errorOf(err, 'Failed to create the company'))
++    } finally {
++      setSaving(false)
++    }
++  }
++
++  return (
++    <div>
++      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap', marginBottom: '24px' }}>
++        <div>
++          <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#1a1a1a' }}>Companies</h1>
++          <p style={{ fontSize: '13px', color: '#999', marginTop: '4px' }}>Bus companies on the platform. Sales are for the last 30 days.</p>
++        </div>
++        <button onClick={() => setShowForm(!showForm)}
++          style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#C0392B', color: 'white', border: 'none', padding: '11px 20px', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>
++          {showForm ? <><X size={16} /> Close</> : <><Plus size={16} /> Add company</>}
++        </button>
++      </div>
++
++      {showForm && (
++        <form onSubmit={submit} style={{ background: 'white', border: '1px solid #F0F0F0', borderRadius: '16px', padding: '24px', marginBottom: '24px' }}>
++          <h2 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '4px' }}>New company</h2>
++          <p style={{ fontSize: '12px', color: '#999', marginBottom: '16px' }}>
++            Check the operator's license first. This creates the company and its first manager's account together.
++          </p>
++          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', marginBottom: '16px' }}>
++            <div><label style={label}>Company name</label><input style={input} value={form.companyName} onChange={(e) => set('companyName', e.target.value)} required /></div>
++            <div><label style={label}>License number</label><input style={input} value={form.licenseNo} onChange={(e) => set('licenseNo', e.target.value)} required /></div>
++            <div><label style={label}>Company phone</label><input style={input} value={form.phone} onChange={(e) => set('phone', e.target.value)} placeholder="0911223344" required /></div>
++            <div><label style={label}>Commission on online sales (%)</label><input style={input} type="number" min="0" max="50" step="0.5" value={form.commissionPercent} onChange={(e) => set('commissionPercent', e.target.value)} required /></div>
++          </div>
++          <div style={{ fontSize: '13px', fontWeight: 700, margin: '8px 0', color: '#1a1a1a' }}>First manager</div>
++          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', marginBottom: '16px' }}>
++            <div><label style={label}>Manager name</label><input style={input} value={form.managerName} onChange={(e) => set('managerName', e.target.value)} required /></div>
++            <div><label style={label}>Manager phone (login)</label><input style={input} value={form.managerPhone} onChange={(e) => set('managerPhone', e.target.value)} placeholder="0911223344" required /></div>
++            <div><label style={label}>Starting password</label><input style={input} type="text" value={form.managerPassword} onChange={(e) => set('managerPassword', e.target.value)} minLength={6} required /></div>
++          </div>
++          <div style={{ marginBottom: '16px' }}>
++            <label style={label}>Notes (private, only you see them)</label>
++            <input style={input} value={form.notes} onChange={(e) => set('notes', e.target.value)} placeholder="e.g. Met on 12 Nov, license checked, pilot operator" />
++          </div>
++          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: '#555', marginBottom: '16px', cursor: 'pointer' }}>
++            <input type="checkbox" checked={form.isDemo} onChange={(e) => set('isDemo', e.target.checked)} />
++            Demo company (hidden from passengers, no online bookings)
++          </label>
++          <button type="submit" disabled={saving}
++            style={{ background: saving ? '#999' : '#C0392B', color: 'white', border: 'none', padding: '12px 28px', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer' }}>
++            {saving ? 'Creating...' : 'Create company'}
++          </button>
++        </form>
++      )}
++
++      {loading && <p style={{ color: '#999' }}>Loading...</p>}
++      {!loading && companies.length === 0 && <p style={{ color: '#999' }}>No companies yet.</p>}
++
++      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
++        {companies.map((c) => (
++          <Link key={c.id} href={`/admin/companies/${c.id}`} style={{ textDecoration: 'none' }}>
++            <div style={{ background: 'white', border: '1px solid #F0F0F0', borderRadius: '16px', padding: '18px 20px', opacity: c.status === 'SUSPENDED' ? 0.75 : 1 }}>
++              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
++                <div>
++                  <div style={{ fontSize: '16px', fontWeight: 700, color: '#1a1a1a', marginBottom: '6px' }}>{c.companyName}</div>
++                  <div>
++                    {c.status === 'SUSPENDED' ? badge('Suspended', '#FFF8E5', '#9A6B00') : badge('Active', '#F0FFF4', '#2E8B57')}
++                    {c.isDemo && badge('Demo', '#EEF2FF', '#4169E1')}
++                    {badge(`${c.commissionPercent}% commission`, '#F5F5F5', '#666')}
++                  </div>
++                  <div style={{ fontSize: '12px', color: '#999', marginTop: '8px' }}>
++                    Manager: {c.manager ? `${c.manager.name} · ${c.manager.phone}` : <span style={{ color: '#C0392B', fontWeight: 600 }}>none active</span>}
++                  </div>
++                </div>
++                <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', fontSize: '12px', color: '#999' }}>
++                  <div><div style={{ fontSize: '16px', fontWeight: 700, color: '#1a1a1a' }}>{c.buses}</div>buses</div>
++                  <div><div style={{ fontSize: '16px', fontWeight: 700, color: '#1a1a1a' }}>{c.upcomingTrips}</div>upcoming trips</div>
++                  <div><div style={{ fontSize: '16px', fontWeight: 700, color: '#2E8B57' }}>{formatPrice(c.online30.total)}</div>online · {c.online30.tickets}</div>
++                  <div><div style={{ fontSize: '16px', fontWeight: 700, color: '#D4A017' }}>{formatPrice(c.counter30.total)}</div>counter · {c.counter30.tickets}</div>
++                </div>
++              </div>
++            </div>
++          </Link>
++        ))}
++      </div>
++    </div>
++  )
++}
+diff --git a/apps/web/src/app/admin/layout.tsx b/apps/web/src/app/admin/layout.tsx
+index 6a37f92..116e102 100644
+--- a/apps/web/src/app/admin/layout.tsx
++++ b/apps/web/src/app/admin/layout.tsx
+@@ -4,10 +4,11 @@ import { useEffect, useState } from 'react'
+ import { useRouter, usePathname } from 'next/navigation'
+ import { useAuthStore } from '@/store/auth.store'
+ import Link from 'next/link'
+-import { Menu, X, Bus, MapPin, Calendar, Ticket, Users, LayoutDashboard, LogOut } from 'lucide-react'
++import { Menu, X, Bus, MapPin, Calendar, Ticket, Users, LayoutDashboard, LogOut, Building2 } from 'lucide-react'
+ 
+ const navItems = [
+   { href: '/admin', label: 'Dashboard', icon: LayoutDashboard },
++  { href: '/admin/companies', label: 'Companies', icon: Building2 },
+   { href: '/admin/routes', label: 'Routes', icon: MapPin },
+   { href: '/admin/schedules', label: 'Schedules', icon: Calendar },
+   { href: '/admin/bookings', label: 'Bookings', icon: Ticket },
+diff --git a/apps/web/src/app/admin/page.tsx b/apps/web/src/app/admin/page.tsx
+index fb4866b..19fd94c 100644
+--- a/apps/web/src/app/admin/page.tsx
++++ b/apps/web/src/app/admin/page.tsx
+@@ -1,142 +1,144 @@
+ 'use client'
+ 
+ import { useEffect, useState } from 'react'
++import Link from 'next/link'
+ import { api } from '@/lib/api'
+-import { Bus, Users, Ticket, MapPin, TrendingUp } from 'lucide-react'
+-import { formatPrice } from '@bus/utils'
++import AttentionList from '@/components/AttentionList'
++import { AttentionItem, Totals, errorOf } from '@/lib/admin'
++import { Building2, Users, Ticket, Banknote, Globe, CalendarClock } from 'lucide-react'
++import { formatPrice, formatDate, formatTime } from '@bus/utils'
++import toast from 'react-hot-toast'
+ 
+ interface RecentBooking {
+   id: string
+-  totalPrice: number
++  source: 'ONLINE' | 'COUNTER'
+   status: string
++  totalPrice: number
+   createdAt: string
+-  user: { name: string; phone: string }
+-  schedule: {
+-    route: { fromCity: string; toCity: string }
+-    departureTime: string
+-  }
++  passengerName: string | null
++  passengerPhone: string | null
++  companyName: string
++  fromCity: string
++  toCity: string
++  departureTime: string
+ }
+ 
+-interface Stats {
+-  totalRoutes: number
+-  totalBookings: number
+-  totalRevenue: number
++interface Dashboard {
++  companies: { total: number; active: number; suspended: number; demo: number }
++  passengers: number
++  upcomingTrips: number
++  today: { online: Totals; counter: Totals }
++  last30: { online: Totals; counter: Totals }
++  attention: { total: number; high: number; items: AttentionItem[] }
+   recentBookings: RecentBooking[]
+ }
+ 
++const statusStyle = (status: string) =>
++  status === 'CONFIRMED' || status === 'COMPLETED' ? { bg: '#F0FFF4', color: '#2E8B57' }
++  : status === 'CANCELLED' ? { bg: '#FFF5F5', color: '#C0392B' }
++  : { bg: '#FFFBEB', color: '#D4A017' }
++
++const box: React.CSSProperties = { background: 'white', borderRadius: '16px', border: '1px solid #F0F0F0', padding: '20px 24px', marginBottom: '24px' }
++
+ export default function AdminDashboard() {
+-  const [stats, setStats] = useState<Stats | null>(null)
++  const [data, setData] = useState<Dashboard | null>(null)
+   const [loading, setLoading] = useState(true)
+ 
+   useEffect(() => {
+-    const fetchStats = async () => {
+-      try {
+-        const [routesRes, bookingsRes] = await Promise.all([
+-          api.get('/routes'),
+-          api.get('/bookings'),
+-        ])
+-        const bookings = bookingsRes.data.data.bookings
+-        const totalRevenue = bookings
+-          .filter((b: { status: string }) => b.status === 'CONFIRMED')
+-          .reduce((sum: number, b: { totalPrice: number }) => sum + b.totalPrice, 0)
+-
+-        setStats({
+-          totalRoutes: routesRes.data.data.total,
+-          totalBookings: bookingsRes.data.data.total,
+-          totalRevenue,
+-          recentBookings: bookings.slice(0, 5),
+-        })
+-      } catch (err) {
+-        console.error(err)
+-      } finally {
+-        setLoading(false)
+-      }
+-    }
+-    fetchStats()
++    api.get('/admin/dashboard')
++      .then((res) => setData(res.data.data))
++      .catch((err) => toast.error(errorOf(err, 'Failed to load the dashboard')))
++      .finally(() => setLoading(false))
+   }, [])
+ 
+   if (loading) return <div style={{ color: '#999' }}>Loading dashboard...</div>
+-  if (!stats) return null
++  if (!data) return null
+ 
+-  const statCards = [
+-    { label: 'Total Routes', value: stats.totalRoutes, icon: MapPin, color: '#C0392B', bg: '#FEF2F2' },
+-    { label: 'Total Bookings', value: stats.totalBookings, icon: Ticket, color: '#2E8B57', bg: '#F0FFF4' },
+-    { label: 'Total Revenue', value: formatPrice(stats.totalRevenue), icon: TrendingUp, color: '#D4A017', bg: '#FFFBEB' },
+-    { label: 'Active Users', value: '—', icon: Users, color: '#4169E1', bg: '#EEF2FF' },
+-  ]
++  const card = (label: string, value: string | number, sub: string, Icon: typeof Ticket, color: string, bg: string) => (
++    <div key={label} style={{ background: 'white', borderRadius: '16px', padding: '20px', border: '1px solid #F0F0F0' }}>
++      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
++        <p style={{ fontSize: '13px', color: '#999' }}>{label}</p>
++        <div style={{ width: '34px', height: '34px', borderRadius: '10px', background: bg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
++          <Icon size={17} color={color} />
++        </div>
++      </div>
++      <p style={{ fontSize: '24px', fontWeight: 700, color: '#1a1a1a' }}>{value}</p>
++      <p style={{ fontSize: '12px', color: '#999', marginTop: '2px' }}>{sub}</p>
++    </div>
++  )
+ 
+-  const statusColor = (status: string) => {
+-    if (status === 'CONFIRMED') return { bg: '#F0FFF4', color: '#2E8B57' }
+-    if (status === 'CANCELLED') return { bg: '#FFF5F5', color: '#C0392B' }
+-    return { bg: '#FFFBEB', color: '#D4A017' }
+-  }
++  const t = (x: Totals) => `${x.tickets} ticket${x.tickets === 1 ? '' : 's'}`
+ 
+   return (
+     <div>
+-      {/* Header */}
+-      <div style={{ marginBottom: '32px' }}>
++      <div style={{ marginBottom: '24px' }}>
+         <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#1a1a1a' }}>Dashboard</h1>
+-        <p style={{ fontSize: '14px', color: '#999', marginTop: '4px' }}>Welcome back! Here's your platform overview.</p>
++        <p style={{ fontSize: '14px', color: '#999', marginTop: '4px' }}>Platform overview. Demo companies are not counted.</p>
+       </div>
+ 
+-      {/* Stat Cards */}
+-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '32px' }}>
+-        {statCards.map((card) => {
+-          const Icon = card.icon
+-          return (
+-            <div key={card.label} style={{ background: 'white', borderRadius: '16px', padding: '24px', border: '1px solid #F0F0F0' }}>
+-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+-                <p style={{ fontSize: '13px', color: '#999' }}>{card.label}</p>
+-                <div style={{ width: '36px', height: '36px', borderRadius: '10px', background: card.bg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+-                  <Icon size={18} color={card.color} />
+-                </div>
+-              </div>
+-              <p style={{ fontSize: '26px', fontWeight: 700, color: '#1a1a1a' }}>{card.value}</p>
+-            </div>
+-          )
+-        })}
++      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: '16px', marginBottom: '24px' }}>
++        {card('Companies', data.companies.active, `${data.companies.suspended} suspended · ${data.companies.demo} demo`, Building2, '#C0392B', '#FEF2F2')}
++        {card('Passengers', data.passengers, 'registered accounts', Users, '#4169E1', '#EEF2FF')}
++        {card('Online sales today', formatPrice(data.today.online.total), `${t(data.today.online)} · 30 days: ${formatPrice(data.last30.online.total)}`, Globe, '#2E8B57', '#F0FFF4')}
++        {card('Counter sales today', formatPrice(data.today.counter.total), `${t(data.today.counter)} · 30 days: ${formatPrice(data.last30.counter.total)}`, Banknote, '#D4A017', '#FFFBEB')}
++        {card('Trips, next 7 days', data.upcomingTrips, 'open for booking', CalendarClock, '#555', '#F5F5F5')}
+       </div>
+ 
+-      {/* Recent Bookings */}
+-      <div style={{ background: 'white', borderRadius: '16px', border: '1px solid #F0F0F0', overflow: 'hidden' }}>
++      <div style={box}>
++        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
++          <h2 style={{ fontSize: '16px', fontWeight: 600, color: '#1a1a1a' }}>
++            Needs attention {data.attention.total > 0 && <span style={{ color: '#C0392B' }}>({data.attention.total})</span>}
++          </h2>
++          <Link href="/admin/companies" style={{ fontSize: '13px', color: '#C0392B', fontWeight: 600, textDecoration: 'none' }}>All companies →</Link>
++        </div>
++        <AttentionList items={data.attention.items} total={data.attention.total} />
++      </div>
++
++      <div style={{ ...box, padding: 0, overflow: 'hidden' }}>
+         <div style={{ padding: '20px 24px', borderBottom: '1px solid #F5F5F5', display: 'flex', alignItems: 'center', gap: '8px' }}>
+           <Ticket size={18} color="#C0392B" />
+-          <h2 style={{ fontSize: '16px', fontWeight: 600, color: '#1a1a1a' }}>Recent Bookings</h2>
++          <h2 style={{ fontSize: '16px', fontWeight: 600, color: '#1a1a1a' }}>Recent bookings</h2>
++        </div>
++        <div style={{ overflowX: 'auto' }}>
++          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '640px' }}>
++            <thead>
++              <tr style={{ background: '#FAFAFA' }}>
++                {['Passenger', 'Company', 'Trip', 'Amount', 'Status'].map((h) => (
++                  <th key={h} style={{ textAlign: 'left', padding: '12px 24px', fontSize: '12px', color: '#999', fontWeight: 500 }}>{h}</th>
++                ))}
++              </tr>
++            </thead>
++            <tbody>
++              {data.recentBookings.length === 0 && (
++                <tr><td colSpan={5} style={{ padding: '32px', textAlign: 'center', color: '#999', fontSize: '14px' }}>No bookings yet.</td></tr>
++              )}
++              {data.recentBookings.map((b) => {
++                const s = statusStyle(b.status)
++                return (
++                  <tr key={b.id} style={{ borderTop: '1px solid #F5F5F5' }}>
++                    <td style={{ padding: '14px 24px' }}>
++                      <p style={{ fontSize: '14px', fontWeight: 500, color: '#1a1a1a' }}>
++                        {b.passengerName ?? '—'}
++                        {b.source === 'COUNTER' && <span style={{ marginLeft: '6px', fontSize: '10px', background: '#FFF8E5', color: '#9A6B00', padding: '2px 6px', borderRadius: '10px' }}>Counter</span>}
++                      </p>
++                      <p style={{ fontSize: '12px', color: '#bbb' }}>{b.passengerPhone ?? ''}</p>
++                    </td>
++                    <td style={{ padding: '14px 24px', fontSize: '13px', color: '#555' }}>{b.companyName}</td>
++                    <td style={{ padding: '14px 24px', fontSize: '13px', color: '#555' }}>
++                      {b.fromCity} → {b.toCity}
++                      <div style={{ fontSize: '11px', color: '#bbb' }}>{formatDate(b.departureTime)} {formatTime(b.departureTime)}</div>
++                    </td>
++                    <td style={{ padding: '14px 24px', fontSize: '14px', fontWeight: 600, color: '#1a1a1a' }}>{formatPrice(b.totalPrice)}</td>
++                    <td style={{ padding: '14px 24px' }}>
++                      <span style={{ fontSize: '11px', fontWeight: 600, padding: '4px 10px', borderRadius: '20px', background: s.bg, color: s.color }}>{b.status}</span>
++                    </td>
++                  </tr>
++                )
++              })}
++            </tbody>
++          </table>
+         </div>
+-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+-          <thead>
+-            <tr style={{ background: '#FAFAFA' }}>
+-              {['Passenger', 'Route', 'Amount', 'Status'].map(h => (
+-                <th key={h} style={{ textAlign: 'left', padding: '12px 24px', fontSize: '12px', color: '#999', fontWeight: 500 }}>{h}</th>
+-              ))}
+-            </tr>
+-          </thead>
+-          <tbody>
+-            {stats.recentBookings.map((booking) => {
+-              const s = statusColor(booking.status)
+-              return (
+-                <tr key={booking.id} style={{ borderTop: '1px solid #F5F5F5' }}>
+-                  <td style={{ padding: '14px 24px' }}>
+-                    <p style={{ fontSize: '14px', fontWeight: 500, color: '#1a1a1a' }}>{booking.user.name}</p>
+-                    <p style={{ fontSize: '12px', color: '#bbb' }}>{booking.user.phone}</p>
+-                  </td>
+-                  <td style={{ padding: '14px 24px', fontSize: '13px', color: '#555' }}>
+-                    {booking.schedule.route.fromCity} → {booking.schedule.route.toCity}
+-                  </td>
+-                  <td style={{ padding: '14px 24px', fontSize: '14px', fontWeight: 600, color: '#1a1a1a' }}>
+-                    {formatPrice(booking.totalPrice)}
+-                  </td>
+-                  <td style={{ padding: '14px 24px' }}>
+-                    <span style={{ fontSize: '11px', fontWeight: 600, padding: '4px 10px', borderRadius: '20px', background: s.bg, color: s.color }}>
+-                      {booking.status}
+-                    </span>
+-                  </td>
+-                </tr>
+-              )
+-            })}
+-          </tbody>
+-        </table>
+       </div>
+     </div>
+   )
+-}
+\ No newline at end of file
++}
+diff --git a/apps/web/src/app/admin/schedules/page.tsx b/apps/web/src/app/admin/schedules/page.tsx
+index 685eacb..13be4c4 100644
+--- a/apps/web/src/app/admin/schedules/page.tsx
++++ b/apps/web/src/app/admin/schedules/page.tsx
+@@ -27,7 +27,7 @@ export default function AdminSchedulesPage() {
+ 
+   const fetchAll = async () => {
+     try {
+-      const [schedulesRes, routesRes] = await Promise.all([api.get('/schedules', { params: { includePast: true, includeClosed: true } }), api.get('/routes')])
++      const [schedulesRes, routesRes] = await Promise.all([api.get('/schedules', { params: { includePast: true, includeClosed: true, includeHidden: true } }), api.get('/routes')])
+       setSchedules(schedulesRes.data.data.schedules)
+       setRoutes(routesRes.data.data.routes)
+     } catch { toast.error('Failed to load data') }
+diff --git a/apps/web/src/app/book/[scheduleId]/page.tsx b/apps/web/src/app/book/[scheduleId]/page.tsx
+index 458d0d1..d2d8ecc 100644
+--- a/apps/web/src/app/book/[scheduleId]/page.tsx
++++ b/apps/web/src/app/book/[scheduleId]/page.tsx
+@@ -18,6 +18,8 @@ interface ScheduleDetail {
+   bus: { totalSeats: number; busType: string; plateNumber: string; operator: { id: string; companyName: string } }
+   availableSeats: number
+   status: 'OPEN' | 'CLOSED'
++  // false when the company is suspended or a demo company
++  bookable?: boolean
+ }
+ 
+ interface Departure {
+@@ -144,7 +146,7 @@ export default function BookPage() {
+   : []
+ 
+   const pickupMissing = pickupPoints.length > 0 && !pickupId
+-  const canBook = selectedSeats.length === passengers && !pickupMissing && schedule?.status !== 'CLOSED'
++  const canBook = selectedSeats.length === passengers && !pickupMissing && schedule?.status !== 'CLOSED' && schedule?.bookable !== false
+ 
+   const toggleSeat = (seat: string) => {
+     if (bookedSeats.includes(seat)) return
+@@ -228,6 +230,11 @@ export default function BookPage() {
+       </div>
+ 
+       <div className="page-pad" style={{ maxWidth: '900px', margin: '0 auto', padding: '32px 80px' }}>
++        {schedule.status !== 'CLOSED' && schedule.bookable === false && (
++          <div style={{ background: '#FEF2F2', border: '1px solid #F5C6C6', color: '#C0392B', borderRadius: '12px', padding: '16px 20px', marginBottom: '20px', fontSize: '14px', fontWeight: 600 }}>
++            This bus company is not taking online bookings right now.
++          </div>
++        )}
+         {schedule.status === 'CLOSED' && (
+           <div style={{ background: '#FEF2F2', border: '1px solid #F5C6C6', color: '#C0392B', borderRadius: '12px', padding: '16px 20px', marginBottom: '20px', fontSize: '14px', fontWeight: 600 }}>
+             This trip is closed and no longer takes bookings.
+diff --git a/apps/web/src/app/operator/layout.tsx b/apps/web/src/app/operator/layout.tsx
+index 3332c7a..6f66bc6 100644
+--- a/apps/web/src/app/operator/layout.tsx
++++ b/apps/web/src/app/operator/layout.tsx
+@@ -4,6 +4,7 @@ import { useState } from 'react'
+ import { useRouter, usePathname } from 'next/navigation'
+ import { useAuthStore } from '@/store/auth.store'
+ import { useStaffGuard } from '@/hooks/useStaffGuard'
++import SuspendedNotice from '@/components/SuspendedNotice'
+ import Link from 'next/link'
+ import { Menu, Bus, Ticket, LayoutDashboard, LogOut, Calendar, MapPin, Users, Banknote, Plus, ClipboardCheck } from 'lucide-react'
+ 
+@@ -24,7 +25,7 @@ export default function OperatorLayout({ children }: { children: React.ReactNode
+   const pathname = usePathname()
+   const { logout } = useAuthStore()
+   // Managers (and the platform admin). Sellers and checkers are sent to their own pages.
+-  const { ready, user } = useStaffGuard(['MANAGER', 'ADMIN'])
++  const { ready, user, suspended } = useStaffGuard(['MANAGER', 'ADMIN'])
+   const [navOpen, setNavOpen] = useState(false)
+ 
+   const handleLogout = () => {
+@@ -38,6 +39,8 @@ export default function OperatorLayout({ children }: { children: React.ReactNode
+     </div>
+   )
+ 
++  if (suspended) return <SuspendedNotice companyName={user?.staff?.companyName} />
++
+   return (
+     <div style={{ minHeight: '100vh', display: 'flex', background: '#F8F8F8' }}>
+       {/* Top bar + backdrop (phones and small tablets only) */}
+diff --git a/apps/web/src/components/AttentionList.tsx b/apps/web/src/components/AttentionList.tsx
+new file mode 100644
+index 0000000..993ba8b
+--- /dev/null
++++ b/apps/web/src/components/AttentionList.tsx
+@@ -0,0 +1,35 @@
++'use client'
++
++import Link from 'next/link'
++import { AttentionItem, SEVERITY_STYLE } from '@/lib/admin'
++
++/** The "needs attention" panel: what the admin should look at first. */
++export default function AttentionList({ items, total }: { items: AttentionItem[]; total?: number }) {
++  if (items.length === 0) {
++    return <p style={{ color: '#2E8B57', fontSize: '14px', padding: '8px 0' }}>Nothing needs your attention right now.</p>
++  }
++  return (
++    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
++      {items.map((item, i) => {
++        const sev = SEVERITY_STYLE[item.severity]
++        const body = (
++          <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start', padding: '12px 14px', borderRadius: '12px', background: sev.bg }}>
++            <span style={{ fontSize: '10px', fontWeight: 700, color: sev.color, border: `1px solid ${sev.color}`, borderRadius: '10px', padding: '2px 8px', flexShrink: 0, marginTop: '2px' }}>
++              {sev.label}
++            </span>
++            <div style={{ minWidth: 0 }}>
++              <div style={{ fontSize: '14px', fontWeight: 600, color: '#1a1a1a' }}>{item.title}</div>
++              {item.detail && <div style={{ fontSize: '12px', color: '#666', marginTop: '2px', lineHeight: 1.5 }}>{item.detail}</div>}
++            </div>
++          </div>
++        )
++        return item.operatorId
++          ? <Link key={`${item.kind}-${item.bookingId ?? item.operatorId}-${i}`} href={`/admin/companies/${item.operatorId}`} style={{ textDecoration: 'none' }}>{body}</Link>
++          : <div key={i}>{body}</div>
++      })}
++      {total !== undefined && total > items.length && (
++        <p style={{ fontSize: '12px', color: '#999' }}>And {total - items.length} more.</p>
++      )}
++    </div>
++  )
++}
+diff --git a/apps/web/src/components/StaffShell.tsx b/apps/web/src/components/StaffShell.tsx
+index 3cfbc82..cb861cb 100644
+--- a/apps/web/src/components/StaffShell.tsx
++++ b/apps/web/src/components/StaffShell.tsx
+@@ -5,6 +5,7 @@ import { Bus, LogOut } from 'lucide-react'
+ import { useAuthStore } from '@/store/auth.store'
+ import { useStaffGuard, Allowed } from '@/hooks/useStaffGuard'
+ import { STAFF_ROLE_LABEL } from '@/lib/staffHome'
++import SuspendedNotice from '@/components/SuspendedNotice'
+ 
+ /**
+  * A simple full-width page for staff who work on a phone (counter sellers, ticket
+@@ -19,7 +20,7 @@ export default function StaffShell({
+ }) {
+   const router = useRouter()
+   const { logout } = useAuthStore()
+-  const { ready, user } = useStaffGuard(allowed)
++  const { ready, user, suspended } = useStaffGuard(allowed)
+ 
+   if (!ready) {
+     return (
+@@ -29,6 +30,8 @@ export default function StaffShell({
+     )
+   }
+ 
++  if (suspended) return <SuspendedNotice companyName={user?.staff?.companyName} />
++
+   return (
+     <div style={{ minHeight: '100vh', background: '#F8F8F8' }}>
+       <header style={{ background: '#1A0A0A', padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+diff --git a/apps/web/src/components/SuspendedNotice.tsx b/apps/web/src/components/SuspendedNotice.tsx
+new file mode 100644
+index 0000000..6231436
+--- /dev/null
++++ b/apps/web/src/components/SuspendedNotice.tsx
+@@ -0,0 +1,29 @@
++'use client'
++
++import { useRouter } from 'next/navigation'
++import { useAuthStore } from '@/store/auth.store'
++import { PauseCircle } from 'lucide-react'
++
++/** Shown instead of a staff page when the platform admin suspended the person's company. */
++export default function SuspendedNotice({ companyName }: { companyName?: string }) {
++  const router = useRouter()
++  const { logout } = useAuthStore()
++  return (
++    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#F8F8F8', padding: '24px' }}>
++      <div style={{ background: 'white', border: '1px solid #EEEEEE', borderRadius: '16px', padding: '32px 24px', maxWidth: '420px', textAlign: 'center' }}>
++        <PauseCircle size={40} color="#9A6B00" style={{ margin: '0 auto 12px' }} />
++        <h1 style={{ fontSize: '20px', fontWeight: 700, color: '#1a1a1a', marginBottom: '8px' }}>Account suspended</h1>
++        <p style={{ fontSize: '14px', color: '#666', lineHeight: 1.6, marginBottom: '20px' }}>
++          {companyName ? `${companyName}'s` : "Your company's"} account is suspended, so you can't sell tickets or manage trips right now.
++          Please contact EthioBus to sort this out.
++        </p>
++        <button
++          onClick={() => { logout(); router.push('/') }}
++          style={{ background: '#1A0A0A', color: 'white', border: 'none', borderRadius: '10px', padding: '12px 24px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}
++        >
++          Log out
++        </button>
++      </div>
++    </div>
++  )
++}
+diff --git a/apps/web/src/hooks/useStaffGuard.ts b/apps/web/src/hooks/useStaffGuard.ts
+index ecb5e46..3e22284 100644
+--- a/apps/web/src/hooks/useStaffGuard.ts
++++ b/apps/web/src/hooks/useStaffGuard.ts
+@@ -58,5 +58,7 @@ export function useStaffGuard(allowed: Allowed[]) {
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+   }, [])
+ 
+-  return { ready, user }
++  // The platform admin suspended this person's company
++  const suspended = ready && !!user?.staff?.suspended
++  return { ready, user, suspended }
+ }
+diff --git a/apps/web/src/lib/admin.ts b/apps/web/src/lib/admin.ts
+new file mode 100644
+index 0000000..d89ac7d
+--- /dev/null
++++ b/apps/web/src/lib/admin.ts
+@@ -0,0 +1,41 @@
++// Shared by the admin screens.
++
++export interface Totals { tickets: number; total: number }
++
++export interface AttentionItem {
++  kind: string
++  severity: 'high' | 'medium' | 'info'
++  title: string
++  detail: string
++  operatorId?: string
++  bookingId?: string
++}
++
++export interface Company {
++  id: string
++  companyName: string
++  licenseNo: string
++  phone: string
++  status: 'ACTIVE' | 'SUSPENDED'
++  suspendedAt: string | null
++  suspendedReason: string | null
++  isDemo: boolean
++  commissionPercent: number
++  notes: string | null
++  createdAt: string
++  buses: number
++  activeStaff: number
++  manager: { name: string; phone: string } | null
++  upcomingTrips: number
++  online30: Totals
++  counter30: Totals
++}
++
++export const SEVERITY_STYLE: Record<AttentionItem['severity'], { bg: string; color: string; label: string }> = {
++  high: { bg: '#FEF2F2', color: '#C0392B', label: 'Urgent' },
++  medium: { bg: '#FFF8E5', color: '#9A6B00', label: 'Soon' },
++  info: { bg: '#F5F5F5', color: '#666', label: 'Info' },
++}
++
++export const errorOf = (err: unknown, fallback: string) =>
++  (err as { response?: { data?: { error?: string } } })?.response?.data?.error || fallback
+diff --git a/packages/types/src/index.ts b/packages/types/src/index.ts
+index ea20b7e..b3b2ff2 100644
+--- a/packages/types/src/index.ts
++++ b/packages/types/src/index.ts
+@@ -8,6 +8,8 @@ export interface StaffInfo {
+   role: StaffRole
+   operatorId: string
+   companyName: string
++  // The platform admin suspended this company: staff can log in but cannot work
++  suspended?: boolean
+ }
+ 
+ export interface User {

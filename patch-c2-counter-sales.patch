@@ -1,0 +1,2350 @@
+diff --git a/apps/api/prisma/schema.prisma b/apps/api/prisma/schema.prisma
+index 87fcd54..4e421d2 100644
+--- a/apps/api/prisma/schema.prisma
++++ b/apps/api/prisma/schema.prisma
+@@ -104,8 +104,10 @@ model ScheduleTemplate {
+ 
+ model Booking {
+   id          String        @id @default(cuid())
+-  userId      String
+-  user        User          @relation(fields: [userId], references: [id])
++  // Online bookings belong to an account. Counter (walk-in) sales may have no
++  // account: then the passenger is identified by passengerName / passengerPhone.
++  userId      String?
++  user        User?         @relation(fields: [userId], references: [id])
+   scheduleId  String
+   schedule    Schedule      @relation(fields: [scheduleId], references: [id])
+   seatNumbers String[]
+@@ -118,8 +120,29 @@ model Booking {
+   pickupPoint    PickupPoint? @relation("BookingPickup", fields: [pickupPointId], references: [id], onDelete: Restrict)
+   dropoffPointId String?
+   dropoffPoint   PickupPoint? @relation("BookingDropoff", fields: [dropoffPointId], references: [id], onDelete: Restrict)
++
++  // Counter sales (made by staff at the bus station)
++  source         BookingSource @default(ONLINE)
++  passengerName  String?
++  passengerPhone String?
++  ticketCode     String?       @unique
++  soldByStaffId  String?
++  soldByStaff    OperatorStaff? @relation("StaffSales", fields: [soldByStaffId], references: [id], onDelete: Restrict)
++  // A voided counter sale is CANCELLED with these set (who, when, why)
++  voidedAt        DateTime?
++  voidedByStaffId String?
++  voidedByStaff   OperatorStaff? @relation("StaffVoids", fields: [voidedByStaffId], references: [id], onDelete: Restrict)
++  voidReason      String?
++
+   createdAt   DateTime      @default(now())
+   updatedAt   DateTime      @updatedAt
++
++  @@index([soldByStaffId, createdAt])
++}
++
++enum BookingSource {
++  ONLINE
++  COUNTER
+ }
+ 
+ model Payment {
+@@ -129,8 +152,17 @@ model Payment {
+   amount    Float
+   method    PaymentMethod
+   chapaRef  String?
++  // Receipt / transaction number typed by the seller for Telebirr, CBE Birr and
++  // bank transfers (empty for cash). The same number can't be used twice for
++  // the same method, so one receipt can't pay for two tickets.
++  reference String?
++  // When a counter sale is voided its reference moves here, so the passenger's
++  // real receipt can be used again for the corrected sale.
++  voidedReference String?
+   status    PaymentStatus @default(PENDING)
+   createdAt DateTime      @default(now())
++
++  @@unique([method, reference])
+ }
+ 
+ enum Role {
+@@ -154,6 +186,7 @@ enum BookingStatus {
+ }
+ 
+ enum PaymentMethod {
++  CASH
+   TELEBIRR
+   CBE_BIRR
+   CARD
+@@ -213,6 +246,8 @@ model OperatorStaff {
+   operator   Operator  @relation(fields: [operatorId], references: [id], onDelete: Cascade)
+   role       StaffRole
+   active     Boolean   @default(true)
++  sales      Booking[] @relation("StaffSales")
++  voids      Booking[] @relation("StaffVoids")
+   createdAt  DateTime  @default(now())
+   updatedAt  DateTime  @updatedAt
+ 
+diff --git a/apps/api/src/controllers/booking.controller.ts b/apps/api/src/controllers/booking.controller.ts
+index 664ec79..ccd9fe0 100644
+--- a/apps/api/src/controllers/booking.controller.ts
++++ b/apps/api/src/controllers/booking.controller.ts
+@@ -3,7 +3,8 @@ import { z } from 'zod'
+ import QRCode from 'qrcode'
+ import { prisma } from '../lib/prisma'
+ import { AuthRequest } from '../middleware/auth'
+-import { HOLD_MINUTES, activeBookingFilter, releaseExpiredHolds, seatLabels } from '../lib/seats'
++import { HOLD_MINUTES, releaseExpiredHolds } from '../lib/seats'
++import { SaleError, validateTripForSale, lockAndCheckSeats } from '../lib/sales'
+ 
+ // ─── Validation ─────────────────────────────────────────
+ const createBookingSchema = z.object({
+@@ -27,102 +28,11 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
+     const dropoffPointId = parsed.data.dropoffPointId || undefined
+     const userId = req.userId!
+ 
+-    if (new Set(seatNumbers).size !== seatNumbers.length) {
+-      res.status(400).json({ success: false, error: 'Each seat can only be selected once' })
+-      return
+-    }
+-
+-    // Get schedule with bus info
+-    const schedule = await prisma.schedule.findUnique({
+-      where: { id: scheduleId },
+-      include: { bus: true },
+-    })
+-
+-    if (!schedule) {
+-      res.status(404).json({ success: false, error: 'Schedule not found' })
+-      return
+-    }
+-
+-    if (schedule.status === 'CLOSED') {
+-      res.status(409).json({ success: false, error: 'This trip is closed and no longer takes bookings' })
+-      return
+-    }
+-
+-    // Check departure time hasn't passed
+-    if (new Date(schedule.departureTime) < new Date()) {
+-      res.status(400).json({ success: false, error: 'This schedule has already departed' })
+-      return
+-    }
+-
+-    // Only seats that exist on this bus can be booked
+-    const validSeats = new Set(seatLabels(schedule.bus.totalSeats))
+-    const unknownSeat = seatNumbers.find((seat) => !validSeats.has(seat))
+-    if (unknownSeat) {
+-      res.status(400).json({ success: false, error: `Seat ${unknownSeat} does not exist on this bus` })
+-      return
+-    }
+-
+-    // Pickup is required when this operator has pickup points on this route;
+-    // drop-off is always optional (passengers can also ask the driver).
+-    const points = await prisma.pickupPoint.findMany({
+-      where: { operatorId: schedule.bus.operatorId, routeId: schedule.routeId },
+-    })
+-    const pickupOptions = points.filter((p) => p.kind !== 'DROPOFF')
+-    const dropoffOptions = points.filter((p) => p.kind !== 'PICKUP')
+-
+-    if (pickupOptions.length > 0) {
+-      if (!pickupPointId) {
+-        res.status(400).json({ success: false, error: 'Please choose your pickup point' })
+-        return
+-      }
+-      if (!pickupOptions.some((p) => p.id === pickupPointId)) {
+-        res.status(400).json({ success: false, error: 'That pickup point is not available for this trip' })
+-        return
+-      }
+-    } else if (pickupPointId) {
+-      res.status(400).json({ success: false, error: 'That pickup point is not available for this trip' })
+-      return
+-    }
+-    if (dropoffPointId && !dropoffOptions.some((p) => p.id === dropoffPointId)) {
+-      res.status(400).json({ success: false, error: 'That drop-off point is not available for this trip' })
+-      return
+-    }
+-
++    const schedule = await validateTripForSale({ scheduleId, seatNumbers, pickupPointId, dropoffPointId })
+     const now = new Date()
+ 
+     const booking = await prisma.$transaction(async (tx) => {
+-      // One booking at a time per trip: this lock is what stops two people
+-      // from taking the same seat at the same moment.
+-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${scheduleId}))`
+-
+-      // The operator may have closed the trip while we were checking things
+-      const current = await tx.schedule.findUnique({ where: { id: scheduleId }, select: { status: true } })
+-      if (current?.status === 'CLOSED') {
+-        throw new Error('This trip is closed and no longer takes bookings')
+-      }
+-
+-      // Free seats held by unpaid bookings that ran out of time
+-      await releaseExpiredHolds(tx, { scheduleId }, now)
+-
+-      // Seats held by paid bookings and by unpaid bookings still inside their hold
+-      const existingBookings = await tx.booking.findMany({
+-        where: { scheduleId, ...activeBookingFilter(now) },
+-        select: { seatNumbers: true },
+-      })
+-
+-      const bookedSeats = existingBookings.flatMap((b) => b.seatNumbers)
+-
+-      // Check if any requested seat is already booked
+-      const conflictingSeat = seatNumbers.find((seat) => bookedSeats.includes(seat))
+-      if (conflictingSeat) {
+-        throw new Error(`Seat ${conflictingSeat} is already booked`)
+-      }
+-
+-      // Check total seats not exceeded
+-      const totalBooked = bookedSeats.length + seatNumbers.length
+-      if (totalBooked > schedule.bus.totalSeats) {
+-        throw new Error('Not enough seats available')
+-      }
++      await lockAndCheckSeats(tx, schedule, seatNumbers, now)
+ 
+       // Calculate total price (always on the server, never trusted from the client)
+       const totalPrice = schedule.price * seatNumbers.length
+@@ -161,13 +71,8 @@ export const createBooking = async (req: AuthRequest, res: Response): Promise<vo
+       data: { booking },
+     })
+   } catch (error) {
+-    const message = (error as Error).message
+-    if (
+-      message.includes('already booked') ||
+-      message.includes('Not enough seats') ||
+-      message.includes('is closed')
+-    ) {
+-      res.status(409).json({ success: false, error: message })
++    if (error instanceof SaleError) {
++      res.status(error.status).json({ success: false, error: error.message })
+       return
+     }
+     console.error('CreateBooking error:', error)
+@@ -257,6 +162,12 @@ export const cancelBooking = async (req: AuthRequest, res: Response): Promise<vo
+       return
+     }
+ 
++    // Counter tickets were paid at the counter: only staff can void them
++    if (booking.source === 'COUNTER') {
++      res.status(403).json({ success: false, error: 'This ticket was sold at the counter. Please ask the bus company to cancel it.' })
++      return
++    }
++
+     if (booking.status === 'CANCELLED') {
+       res.status(400).json({ success: false, error: 'Booking already cancelled' })
+       return
+diff --git a/apps/api/src/controllers/counter.controller.ts b/apps/api/src/controllers/counter.controller.ts
+new file mode 100644
+index 0000000..a721126
+--- /dev/null
++++ b/apps/api/src/controllers/counter.controller.ts
+@@ -0,0 +1,377 @@
++import { Response } from 'express'
++import { z } from 'zod'
++import QRCode from 'qrcode'
++import { Prisma } from '@prisma/client'
++import { prisma } from '../lib/prisma'
++import { AuthRequest } from '../middleware/auth'
++import { activeBookingFilter } from '../lib/seats'
++import { SaleError, validateTripForSale, lockAndCheckSeats } from '../lib/sales'
++import { normalizePhone, phoneVariants } from '../lib/phone'
++import { generateTicketCode } from '../lib/ticketCode'
++import { addisDateString, addisDayRange, isValidDateString } from '../lib/time'
++
++/** A seller may void their own sale only this long after making it. */
++export const SELLER_VOID_MINUTES = 15
++
++const COUNTER_METHODS = ['CASH', 'TELEBIRR', 'CBE_BIRR', 'BANK_TRANSFER'] as const
++type CounterMethod = (typeof COUNTER_METHODS)[number]
++
++const saleSchema = z.object({
++  scheduleId: z.string().min(1),
++  seatNumbers: z.array(z.string()).min(1, 'Choose at least one seat').max(10, 'At most 10 seats per sale'),
++  pickupPointId: z.string().optional(),
++  dropoffPointId: z.string().optional(),
++  passengerName: z.string().trim().min(2, 'Passenger name is required').max(80),
++  passengerPhone: z.string().trim().min(1, 'Passenger phone number is required'),
++  method: z.enum(COUNTER_METHODS),
++  reference: z.string().trim().max(60).optional(),
++})
++
++const REFERENCE_RE = /^[A-Z0-9][A-Z0-9_-]{3,39}$/
++
++/** The day the caller asked for (YYYY-MM-DD, Addis Ababa), or today. Sends the error itself. */
++function dayFromQuery(req: AuthRequest, res: Response): { date: string; start: Date; end: Date } | null {
++  const requested = req.query.date as string | undefined
++  const date = requested || addisDateString(new Date())
++  if (!isValidDateString(date)) {
++    res.status(400).json({ success: false, error: 'Invalid date' })
++    return null
++  }
++  return { date, ...addisDayRange(date) }
++}
++
++// ─── Trips the seller can sell on a day ──────────────────
++// The company's own open trips that have not left yet.
++export const listCounterTrips = async (req: AuthRequest, res: Response): Promise<void> => {
++  try {
++    const day = dayFromQuery(req, res)
++    if (!day) return
++    const now = new Date()
++
++    const trips = await prisma.schedule.findMany({
++      where: {
++        bus: { operatorId: req.operatorId },
++        status: 'OPEN',
++        departureTime: { gte: day.start > now ? day.start : now, lt: day.end },
++      },
++      include: {
++        route: true,
++        bus: { select: { plateNumber: true, busType: true, totalSeats: true } },
++        bookings: { where: activeBookingFilter(now), select: { seatNumbers: true } },
++      },
++      orderBy: { departureTime: 'asc' },
++    })
++
++    res.json({
++      success: true,
++      data: {
++        date: day.date,
++        trips: trips.map(({ bookings, ...t }) => ({
++          ...t,
++          availableSeats: Math.max(0, t.bus.totalSeats - bookings.reduce((n, b) => n + b.seatNumbers.length, 0)),
++        })),
++      },
++    })
++  } catch (error) {
++    console.error('ListCounterTrips error:', error)
++    res.status(500).json({ success: false, error: 'Internal server error' })
++  }
++}
++
++// ─── Sell tickets at the counter ─────────────────────────
++export const createCounterSale = async (req: AuthRequest, res: Response): Promise<void> => {
++  try {
++    const parsed = saleSchema.safeParse(req.body)
++    if (!parsed.success) {
++      res.status(400).json({ success: false, error: parsed.error.issues[0].message })
++      return
++    }
++    const input = parsed.data
++    const pickupPointId = input.pickupPointId || undefined
++    const dropoffPointId = input.dropoffPointId || undefined
++
++    const phone = normalizePhone(input.passengerPhone)
++    if (!phone) {
++      res.status(400).json({ success: false, error: 'Enter a valid passenger phone number, like 0911223344' })
++      return
++    }
++
++    // Digital payments need the number from the receipt SMS; cash has none
++    const method: CounterMethod = input.method
++    let reference: string | null = null
++    if (method === 'CASH') {
++      if (input.reference) {
++        res.status(400).json({ success: false, error: 'Cash payments have no transaction number' })
++        return
++      }
++    } else {
++      reference = (input.reference ?? '').toUpperCase().replace(/\s+/g, '')
++      if (!REFERENCE_RE.test(reference)) {
++        res.status(400).json({
++          success: false,
++          error: 'Enter the transaction number from the payment receipt (letters and numbers, 4 to 40 characters)',
++        })
++        return
++      }
++    }
++
++    const operatorId = req.operatorId!
++    const staffId = req.staffId!
++    const { scheduleId, seatNumbers } = input
++    const now = new Date()
++
++    const schedule = await validateTripForSale({ scheduleId, seatNumbers, pickupPointId, dropoffPointId, operatorId, now })
++
++    // Link the ticket to the passenger's account when they have one, so it also
++    // shows in their My Bookings.
++    const account = await prisma.user.findFirst({
++      where: { phone: { in: phoneVariants(phone) } },
++      select: { id: true },
++    })
++
++    let booking
++    for (let attempt = 0; ; attempt++) {
++      const ticketCode = generateTicketCode()
++      const qrCode = await QRCode.toDataURL(ticketCode)
++      try {
++        booking = await prisma.$transaction(async (tx) => {
++          await lockAndCheckSeats(tx, schedule, seatNumbers, now)
++
++          if (reference) {
++            const used = await tx.payment.findFirst({ where: { method, reference }, select: { id: true } })
++            if (used) {
++              throw new SaleError(409, 'This transaction number was already used for another ticket')
++            }
++          }
++
++          // The price is always worked out here, never taken from the screen
++          const totalPrice = schedule.price * seatNumbers.length
++
++          return tx.booking.create({
++            data: {
++              userId: account?.id ?? null,
++              scheduleId,
++              seatNumbers,
++              totalPrice,
++              status: 'CONFIRMED',
++              source: 'COUNTER',
++              passengerName: input.passengerName,
++              passengerPhone: phone,
++              ticketCode,
++              soldByStaffId: staffId,
++              pickupPointId: pickupPointId ?? null,
++              dropoffPointId: dropoffPointId ?? null,
++              qrCode,
++              payment: { create: { amount: totalPrice, method, reference, status: 'SUCCESS' } },
++            },
++            include: counterBookingInclude,
++          })
++        })
++        break
++      } catch (error) {
++        if ((error as { code?: string })?.code === 'P2002') {
++          // Someone used this receipt number a moment ago, or (very rarely) the
++          // random code collided. Tell the two apart.
++          if (reference && (await prisma.payment.findFirst({ where: { method, reference }, select: { id: true } }))) {
++            throw new SaleError(409, 'This transaction number was already used for another ticket')
++          }
++          if (attempt < 4) continue
++        }
++        throw error
++      }
++    }
++
++    res.status(201).json({ success: true, message: 'Ticket sold', data: { booking: describeSale(booking, req) } })
++  } catch (error) {
++    if (error instanceof SaleError) {
++      res.status(error.status).json({ success: false, error: error.message })
++      return
++    }
++    console.error('CreateCounterSale error:', error)
++    res.status(500).json({ success: false, error: 'Internal server error' })
++  }
++}
++
++const counterBookingInclude = {
++  schedule: { include: { route: true, bus: { select: { plateNumber: true, busType: true, operatorId: true } } } },
++  pickupPoint: { select: { name: true, offsetMin: true } },
++  dropoffPoint: { select: { name: true } },
++  payment: { select: { method: true, reference: true, amount: true } },
++  soldByStaff: { select: { id: true, user: { select: { name: true } } } },
++  voidedByStaff: { select: { user: { select: { name: true } } } },
++} satisfies Prisma.BookingInclude
++
++type CounterBooking = Prisma.BookingGetPayload<{ include: typeof counterBookingInclude }>
++
++/** Whether the caller may void this sale right now (and, if not, why not). */
++function voidRule(booking: CounterBooking, req: AuthRequest, now = new Date()): { ok: true } | { ok: false; status: number; error: string } {
++  if (booking.source !== 'COUNTER') return { ok: false, status: 404, error: 'Sale not found' }
++  if (booking.status !== 'CONFIRMED') return { ok: false, status: 409, error: 'This sale is already voided' }
++  if (booking.schedule.departureTime <= now) {
++    return { ok: false, status: 400, error: 'This trip has already departed, so the sale can no longer be voided' }
++  }
++  if (req.staffRole === 'MANAGER') return { ok: true }
++  if (booking.soldByStaffId !== req.staffId) {
++    return { ok: false, status: 403, error: 'You can only void your own sales' }
++  }
++  if (now.getTime() - booking.createdAt.getTime() > SELLER_VOID_MINUTES * 60 * 1000) {
++    return { ok: false, status: 403, error: `You can only void a sale within ${SELLER_VOID_MINUTES} minutes. Ask your manager.` }
++  }
++  return { ok: true }
++}
++
++function describeSale(booking: CounterBooking, req: AuthRequest) {
++  return { ...booking, canVoid: voidRule(booking, req).ok }
++}
++
++// ─── Sales list ──────────────────────────────────────────
++// Sellers see their own sales for the day, managers see the whole company's.
++export const listCounterSales = async (req: AuthRequest, res: Response): Promise<void> => {
++  try {
++    const day = dayFromQuery(req, res)
++    if (!day) return
++
++    const sales = await prisma.booking.findMany({
++      where: {
++        source: 'COUNTER',
++        createdAt: { gte: day.start, lt: day.end },
++        schedule: { bus: { operatorId: req.operatorId } },
++        ...(req.staffRole === 'SELLER' ? { soldByStaffId: req.staffId } : {}),
++      },
++      include: counterBookingInclude,
++      orderBy: { createdAt: 'desc' },
++    })
++
++    res.json({ success: true, data: { date: day.date, sales: sales.map((s) => describeSale(s, req)) } })
++  } catch (error) {
++    console.error('ListCounterSales error:', error)
++    res.status(500).json({ success: false, error: 'Internal server error' })
++  }
++}
++
++// ─── Void a sale ─────────────────────────────────────────
++// Cancels the ticket and frees its seats. Money is handed back by hand.
++export const voidCounterSale = async (req: AuthRequest, res: Response): Promise<void> => {
++  try {
++    const parsed = z.object({ reason: z.string().trim().min(3, 'Please give a reason').max(200) }).safeParse(req.body)
++    if (!parsed.success) {
++      res.status(400).json({ success: false, error: parsed.error.issues[0].message })
++      return
++    }
++
++    const booking = await prisma.booking.findUnique({
++      where: { id: req.params.id as string },
++      include: counterBookingInclude,
++    })
++    // Another company's sale looks like one that doesn't exist
++    if (!booking || booking.schedule.bus.operatorId !== req.operatorId) {
++      res.status(404).json({ success: false, error: 'Sale not found' })
++      return
++    }
++
++    const rule = voidRule(booking, req)
++    if (!rule.ok) {
++      res.status(rule.status).json({ success: false, error: rule.error })
++      return
++    }
++
++    const now = new Date()
++    const voided = await prisma.$transaction(async (tx) => {
++      // Only one caller can win: a second void of the same sale changes nothing
++      const changed = await tx.booking.updateMany({
++        where: { id: booking.id, status: 'CONFIRMED' },
++        data: { status: 'CANCELLED', voidedAt: now, voidedByStaffId: req.staffId, voidReason: parsed.data.reason },
++      })
++      if (changed.count === 0) throw new SaleError(409, 'This sale is already voided')
++
++      // Free the receipt number so the passenger's real receipt can be used for the corrected sale
++      if (booking.payment?.reference) {
++        await tx.payment.update({
++          where: { bookingId: booking.id },
++          data: { voidedReference: booking.payment.reference, reference: null },
++        })
++      }
++      return tx.booking.findUniqueOrThrow({ where: { id: booking.id }, include: counterBookingInclude })
++    })
++
++    res.json({ success: true, message: 'Sale voided', data: { booking: describeSale(voided, req) } })
++  } catch (error) {
++    if (error instanceof SaleError) {
++      res.status(error.status).json({ success: false, error: error.message })
++      return
++    }
++    console.error('VoidCounterSale error:', error)
++    res.status(500).json({ success: false, error: 'Internal server error' })
++  }
++}
++
++// ─── Daily report (managers) ─────────────────────────────
++// Sales made on a day (by sale time, not trip time), per seller and per payment method.
++export const counterReport = async (req: AuthRequest, res: Response): Promise<void> => {
++  try {
++    const day = dayFromQuery(req, res)
++    if (!day) return
++
++    const sales = await prisma.booking.findMany({
++      where: {
++        source: 'COUNTER',
++        createdAt: { gte: day.start, lt: day.end },
++        schedule: { bus: { operatorId: req.operatorId } },
++      },
++      select: {
++        status: true,
++        totalPrice: true,
++        seatNumbers: true,
++        soldByStaffId: true,
++        soldByStaff: { select: { user: { select: { name: true } } } },
++        payment: { select: { method: true } },
++      },
++    })
++
++    type Row = { tickets: number; seats: number; total: number }
++    const blank = (): Row => ({ tickets: 0, seats: 0, total: 0 })
++    const add = (row: Row, s: (typeof sales)[number]) => {
++      row.tickets += 1
++      row.seats += s.seatNumbers.length
++      row.total += s.totalPrice
++    }
++
++    const byMethod: Record<string, Row> = {}
++    const bySeller = new Map<string, { staffId: string; name: string; byMethod: Record<string, Row> } & Row>()
++    const totals = blank()
++    const voided = blank()
++
++    for (const s of sales) {
++      if (s.status !== 'CONFIRMED') {
++        add(voided, s)
++        continue
++      }
++      const method = s.payment?.method ?? 'UNKNOWN'
++      add(totals, s)
++      add((byMethod[method] ??= blank()), s)
++
++      const key = s.soldByStaffId ?? 'unknown'
++      let seller = bySeller.get(key)
++      if (!seller) {
++        seller = { staffId: key, name: s.soldByStaff?.user.name ?? 'Unknown', byMethod: {}, ...blank() }
++        bySeller.set(key, seller)
++      }
++      add(seller, s)
++      add((seller.byMethod[method] ??= blank()), s)
++    }
++
++    res.json({
++      success: true,
++      data: {
++        date: day.date,
++        totals,
++        byMethod,
++        bySeller: Array.from(bySeller.values()).sort((a, b) => b.total - a.total),
++        voided,
++      },
++    })
++  } catch (error) {
++    console.error('CounterReport error:', error)
++    res.status(500).json({ success: false, error: 'Internal server error' })
++  }
++}
+diff --git a/apps/api/src/controllers/payment.controller.ts b/apps/api/src/controllers/payment.controller.ts
+index a1a1cc7..a70a349 100644
+--- a/apps/api/src/controllers/payment.controller.ts
++++ b/apps/api/src/controllers/payment.controller.ts
+@@ -131,11 +131,18 @@ export const initializePayment = async (req: AuthRequest, res: Response): Promis
+       return
+     }
+ 
+-    if (booking.userId !== userId) {
++    const payer = booking.user
++    if (!payer || booking.userId !== userId) {
+       res.status(403).json({ success: false, error: 'Access denied' })
+       return
+     }
+ 
++    // Counter tickets are paid at the counter, never through Chapa
++    if (booking.source === 'COUNTER') {
++      res.status(400).json({ success: false, error: 'This ticket was paid at the counter' })
++      return
++    }
++
+     if (booking.status === 'CANCELLED') {
+       res.status(400).json({
+         success: false,
+@@ -158,10 +165,10 @@ export const initializePayment = async (req: AuthRequest, res: Response): Promis
+       {
+         amount: booking.totalPrice,
+         currency: 'ETB',
+-        email: booking.user.email || `user${booking.user.id.slice(-6)}@ethiobus.com`,
+-        first_name: booking.user.name.split(' ')[0],
+-        last_name: booking.user.name.split(' ')[1] || booking.user.name,
+-        phone_number: booking.user.phone,
++        email: payer.email || `user${payer.id.slice(-6)}@ethiobus.com`,
++        first_name: payer.name.split(' ')[0],
++        last_name: payer.name.split(' ')[1] || payer.name,
++        phone_number: payer.phone,
+         tx_ref: txRef,
+         callback_url: `${process.env.API_URL}/api/v1/payments/verify`,
+         return_url: `${process.env.FRONTEND_URL}/bookings/${bookingId}?payment=success`,
+diff --git a/apps/api/src/controllers/ticket.controller.ts b/apps/api/src/controllers/ticket.controller.ts
+new file mode 100644
+index 0000000..b43b5b4
+--- /dev/null
++++ b/apps/api/src/controllers/ticket.controller.ts
+@@ -0,0 +1,57 @@
++import { Request, Response } from 'express'
++import QRCode from 'qrcode'
++import { prisma } from '../lib/prisma'
++import { TICKET_CODE_RE } from '../lib/ticketCode'
++
++// ─── Public ticket page data (no login) ──────────────────
++// Anyone with the code can see the ticket, so it never includes the passenger's
++// phone number, only what the passenger or a checker needs.
++export const getPublicTicket = async (req: Request, res: Response): Promise<void> => {
++  try {
++    const code = String(req.params.code ?? '').toUpperCase()
++    if (!TICKET_CODE_RE.test(code)) {
++      res.status(404).json({ success: false, error: 'Ticket not found' })
++      return
++    }
++
++    const booking = await prisma.booking.findUnique({
++      where: { ticketCode: code },
++      include: {
++        schedule: { include: { route: true, bus: { select: { plateNumber: true, busType: true, operator: { select: { companyName: true } } } } } },
++        pickupPoint: { select: { name: true, offsetMin: true } },
++        dropoffPoint: { select: { name: true } },
++      },
++    })
++    if (!booking) {
++      res.status(404).json({ success: false, error: 'Ticket not found' })
++      return
++    }
++
++    const status = booking.status === 'CONFIRMED' || booking.status === 'COMPLETED' ? 'VALID' : 'VOIDED'
++    res.json({
++      success: true,
++      data: {
++        ticket: {
++          code,
++          status,
++          passengerName: booking.passengerName,
++          seatNumbers: booking.seatNumbers,
++          totalPrice: booking.totalPrice,
++          companyName: booking.schedule.bus.operator.companyName,
++          plateNumber: booking.schedule.bus.plateNumber,
++          busType: booking.schedule.bus.busType,
++          fromCity: booking.schedule.route.fromCity,
++          toCity: booking.schedule.route.toCity,
++          departureTime: booking.schedule.departureTime,
++          arrivalTime: booking.schedule.arrivalTime,
++          pickupPoint: booking.pickupPoint,
++          dropoffPoint: booking.dropoffPoint,
++          qrCode: await QRCode.toDataURL(code),
++        },
++      },
++    })
++  } catch (error) {
++    console.error('GetPublicTicket error:', error)
++    res.status(500).json({ success: false, error: 'Internal server error' })
++  }
++}
+diff --git a/apps/api/src/index.ts b/apps/api/src/index.ts
+index e6fb98a..e7d19be 100644
+--- a/apps/api/src/index.ts
++++ b/apps/api/src/index.ts
+@@ -12,6 +12,8 @@ import scheduleRoutes from './routes/schedule.routes'
+ import bookingRoutes from './routes/booking.routes'
+ import operatorRoutes from './routes/operator.routes'
+ import paymentRoutes from './routes/payment.routes'
++import counterRoutes from './routes/counter.routes'
++import ticketRoutes from './routes/ticket.routes'
+ import { maybeTopUp } from './lib/recurring'
+ 
+ // Load environment variables
+@@ -57,6 +59,8 @@ app.use('/api/v1/schedules', scheduleRoutes)
+ app.use('/api/v1/bookings', bookingRoutes)
+ app.use('/api/v1/operator', operatorRoutes)
+ app.use('/api/v1/payments', paymentRoutes)
++app.use('/api/v1/counter', counterRoutes)
++app.use('/api/v1/tickets', ticketRoutes)
+ // ─── Swagger Docs ────────────────────────────────────────
+ app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec))
+ 
+diff --git a/apps/api/src/lib/phone.ts b/apps/api/src/lib/phone.ts
+new file mode 100644
+index 0000000..75442b4
+--- /dev/null
++++ b/apps/api/src/lib/phone.ts
+@@ -0,0 +1,17 @@
++/**
++ * Ethiopian mobile numbers are typed two ways: 09XXXXXXXX and +2519XXXXXXXX.
++ * Accounts keep the number exactly as the person typed it, so to find an
++ * account (or compare numbers) we always check both forms.
++ */
++const ETH_PHONE = /^(?:\+2519|09)(\d{8})$/
++
++/** The canonical form "09XXXXXXXX", or null when it is not a valid mobile number. */
++export function normalizePhone(input: string): string | null {
++  const m = ETH_PHONE.exec(input.trim().replace(/[\s-]/g, ''))
++  return m ? `09${m[1]}` : null
++}
++
++/** Both written forms of a canonical number, for database lookups. */
++export function phoneVariants(canonical: string): string[] {
++  return [canonical, `+251${canonical.slice(1)}`]
++}
+diff --git a/apps/api/src/lib/sales.ts b/apps/api/src/lib/sales.ts
+new file mode 100644
+index 0000000..59f6369
+--- /dev/null
++++ b/apps/api/src/lib/sales.ts
+@@ -0,0 +1,120 @@
++import { Prisma, PrismaClient } from '@prisma/client'
++import { prisma as defaultPrisma } from './prisma'
++import { activeBookingFilter, releaseExpiredHolds, seatLabels } from './seats'
++
++/**
++ * The seat rules shared by online bookings and counter sales.
++ * Both go through exactly this code, under the same per-trip lock, so a
++ * counter sale and an online booking can never take the same seat.
++ */
++
++/** An expected problem with a sale, with the HTTP status to answer with. */
++export class SaleError extends Error {
++  constructor(public status: number, message: string) {
++    super(message)
++  }
++}
++
++export interface TripRequest {
++  scheduleId: string
++  seatNumbers: string[]
++  pickupPointId?: string
++  dropoffPointId?: string
++  /** Counter sales: the trip must belong to this company (else "not found"). */
++  operatorId?: string
++  now?: Date
++}
++
++/**
++ * Checks everything about a sale that doesn't need the lock: the trip exists
++ * (and belongs to the company, for counter sales), is open and not departed,
++ * the seats exist, and the pickup / drop-off points are valid.
++ */
++export async function validateTripForSale(req: TripRequest, client: PrismaClient = defaultPrisma) {
++  const { scheduleId, seatNumbers, pickupPointId, dropoffPointId, operatorId } = req
++  const now = req.now ?? new Date()
++
++  if (new Set(seatNumbers).size !== seatNumbers.length) {
++    throw new SaleError(400, 'Each seat can only be selected once')
++  }
++
++  const schedule = await client.schedule.findUnique({
++    where: { id: scheduleId },
++    include: { bus: true },
++  })
++  // Another company's trip looks exactly like a trip that doesn't exist
++  if (!schedule || (operatorId && schedule.bus.operatorId !== operatorId)) {
++    throw new SaleError(404, 'Schedule not found')
++  }
++  if (schedule.status === 'CLOSED') {
++    throw new SaleError(409, 'This trip is closed and no longer takes bookings')
++  }
++  if (schedule.departureTime < now) {
++    throw new SaleError(400, 'This schedule has already departed')
++  }
++
++  // Only seats that exist on this bus can be booked
++  const validSeats = new Set(seatLabels(schedule.bus.totalSeats))
++  const unknownSeat = seatNumbers.find((seat) => !validSeats.has(seat))
++  if (unknownSeat) throw new SaleError(400, `Seat ${unknownSeat} does not exist on this bus`)
++
++  // Pickup is required when this operator has pickup points on this route;
++  // drop-off is always optional (passengers can also ask the driver).
++  const points = await client.pickupPoint.findMany({
++    where: { operatorId: schedule.bus.operatorId, routeId: schedule.routeId },
++  })
++  const pickupOptions = points.filter((p) => p.kind !== 'DROPOFF')
++  const dropoffOptions = points.filter((p) => p.kind !== 'PICKUP')
++
++  if (pickupOptions.length > 0) {
++    if (!pickupPointId) throw new SaleError(400, 'Please choose your pickup point')
++    if (!pickupOptions.some((p) => p.id === pickupPointId)) {
++      throw new SaleError(400, 'That pickup point is not available for this trip')
++    }
++  } else if (pickupPointId) {
++    throw new SaleError(400, 'That pickup point is not available for this trip')
++  }
++  if (dropoffPointId && !dropoffOptions.some((p) => p.id === dropoffPointId)) {
++    throw new SaleError(400, 'That drop-off point is not available for this trip')
++  }
++
++  return schedule
++}
++
++/**
++ * Inside a transaction: takes the per-trip lock, then checks the trip is still
++ * open and the seats are still free. One sale at a time per trip: this lock is
++ * what stops two people from taking the same seat at the same moment.
++ */
++export async function lockAndCheckSeats(
++  tx: Prisma.TransactionClient,
++  schedule: { id: string; bus: { totalSeats: number } },
++  seatNumbers: string[],
++  now = new Date()
++): Promise<void> {
++  const scheduleId = schedule.id
++  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${scheduleId}))`
++
++  // The operator may have closed the trip while we were checking things
++  const current = await tx.schedule.findUnique({ where: { id: scheduleId }, select: { status: true } })
++  if (current?.status === 'CLOSED') {
++    throw new SaleError(409, 'This trip is closed and no longer takes bookings')
++  }
++
++  // Free seats held by unpaid bookings that ran out of time
++  await releaseExpiredHolds(tx, { scheduleId }, now)
++
++  // Seats held by paid bookings and by unpaid bookings still inside their hold
++  const existing = await tx.booking.findMany({
++    where: { scheduleId, ...activeBookingFilter(now) },
++    select: { seatNumbers: true },
++  })
++  const bookedSeats = existing.flatMap((b) => b.seatNumbers)
++
++  const conflictingSeat = seatNumbers.find((seat) => bookedSeats.includes(seat))
++  if (conflictingSeat) throw new SaleError(409, `Seat ${conflictingSeat} is already booked`)
++
++  if (bookedSeats.length + seatNumbers.length > schedule.bus.totalSeats) {
++    throw new SaleError(409, 'Not enough seats available')
++  }
++}
+diff --git a/apps/api/src/lib/ticketCode.ts b/apps/api/src/lib/ticketCode.ts
+new file mode 100644
+index 0000000..27aeccd
+--- /dev/null
++++ b/apps/api/src/lib/ticketCode.ts
+@@ -0,0 +1,13 @@
++import { randomInt } from 'crypto'
++
++// No 0/O or 1/I, which are easy to mix up when reading a code aloud
++const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
++export const TICKET_CODE_LENGTH = 8
++export const TICKET_CODE_RE = /^[A-HJ-NP-Z2-9]{8}$/
++
++/** A short random code for a counter ticket, e.g. "K7M2QX9D" (32^8, about 1.1 trillion). */
++export function generateTicketCode(): string {
++  let code = ''
++  for (let i = 0; i < TICKET_CODE_LENGTH; i++) code += ALPHABET[randomInt(ALPHABET.length)]
++  return code
++}
+diff --git a/apps/api/src/middleware/auth.ts b/apps/api/src/middleware/auth.ts
+index a90fe27..a538fd5 100644
+--- a/apps/api/src/middleware/auth.ts
++++ b/apps/api/src/middleware/auth.ts
+@@ -6,6 +6,7 @@ export interface AuthRequest extends Request {
+   userRole?: string
+   // Set by the staff middleware (middleware/staff.ts), never from the request:
+   operatorId?: string
++  staffId?: string
+   staffRole?: 'MANAGER' | 'SELLER' | 'CHECKER'
+   isAdmin?: boolean
+ }
+diff --git a/apps/api/src/middleware/staff.ts b/apps/api/src/middleware/staff.ts
+index 9681a1d..b1c99e6 100644
+--- a/apps/api/src/middleware/staff.ts
++++ b/apps/api/src/middleware/staff.ts
+@@ -42,6 +42,7 @@ export const requireStaff =
+         return
+       }
+       req.operatorId = ctx.operatorId
++      req.staffId = ctx.staffId
+       req.staffRole = ctx.role
+       next()
+     } catch (error) {
+diff --git a/apps/api/src/routes/counter.routes.ts b/apps/api/src/routes/counter.routes.ts
+new file mode 100644
+index 0000000..68a8b78
+--- /dev/null
++++ b/apps/api/src/routes/counter.routes.ts
+@@ -0,0 +1,25 @@
++import { Router, IRouter } from 'express'
++import {
++  listCounterTrips,
++  createCounterSale,
++  listCounterSales,
++  voidCounterSale,
++  counterReport,
++} from '../controllers/counter.controller'
++import { authenticate } from '../middleware/auth'
++import { requireStaff } from '../middleware/staff'
++
++const router: IRouter = Router()
++
++// Sellers and managers of a company sell and void. The master admin is left out
++// on purpose: every sale must be traceable to a staff member of the company.
++const sellers = [authenticate, requireStaff(['SELLER', 'MANAGER'], { allowAdmin: false })]
++const managers = [authenticate, requireStaff(['MANAGER'], { allowAdmin: false })]
++
++router.get('/trips', ...sellers, listCounterTrips)
++router.post('/sales', ...sellers, createCounterSale)
++router.get('/sales', ...sellers, listCounterSales)
++router.post('/sales/:id/void', ...sellers, voidCounterSale)
++router.get('/report', ...managers, counterReport)
++
++export default router
+diff --git a/apps/api/src/routes/ticket.routes.ts b/apps/api/src/routes/ticket.routes.ts
+new file mode 100644
+index 0000000..9090a5d
+--- /dev/null
++++ b/apps/api/src/routes/ticket.routes.ts
+@@ -0,0 +1,9 @@
++import { Router, IRouter } from 'express'
++import { getPublicTicket } from '../controllers/ticket.controller'
++
++const router: IRouter = Router()
++
++// Public: no login. The code itself is the secret.
++router.get('/:code', getPublicTicket)
++
++export default router
+diff --git a/apps/api/tests/counter.db.test.ts b/apps/api/tests/counter.db.test.ts
+new file mode 100644
+index 0000000..377bd98
+--- /dev/null
++++ b/apps/api/tests/counter.db.test.ts
+@@ -0,0 +1,529 @@
++/**
++ * Database tests for counter sales (Patch C2), through the REAL routes over HTTP:
++ * route -> permission check -> controller -> database.
++ *
++ * Only run when TEST_DATABASE_URL is set; refuse to run against DATABASE_URL.
++ * They create their own rows (marked TEST-) and remove them afterwards.
++ *
++ *   TEST_DATABASE_URL="postgresql://..." pnpm test
++ */
++import { describe, it, expect, beforeAll, afterAll } from 'vitest'
++import dotenv from 'dotenv'
++import http from 'http'
++import type { AddressInfo } from 'net'
++import express from 'express'
++import jwt from 'jsonwebtoken'
++
++dotenv.config({ path: '../../.env' })
++const TEST_URL = process.env.TEST_DATABASE_URL
++const NORMAL_URL = process.env.DATABASE_URL
++
++if (TEST_URL && NORMAL_URL && TEST_URL === NORMAL_URL) {
++  throw new Error('TEST_DATABASE_URL is the same as DATABASE_URL. Use a separate database or Neon branch.')
++}
++if (TEST_URL) process.env.DATABASE_URL = TEST_URL
++process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-only-for-tests'
++
++type Prisma = typeof import('../src/lib/prisma').prisma
++let prisma: Prisma
++let server: http.Server
++let baseUrl = ''
++
++const tag = `TEST-${Date.now()}`
++const created = {
++  users: new Set<string>(), operators: [] as string[], buses: [] as string[],
++  routes: [] as string[], points: [] as string[],
++}
++let phoneCounter = 0
++const newPhone = () => `09${String((Date.now() % 1000000) * 100 + phoneCounter++).padStart(8, '0').slice(-8)}`
++let refCounter = 0
++const newRef = (prefix = 'TX') => `${prefix}${Date.now().toString(36).toUpperCase()}${refCounter++}`.slice(0, 30)
++
++const token = (userId: string, role: string) => jwt.sign({ userId, role }, process.env.JWT_SECRET!)
++
++async function api(method: string, path: string, tok?: string, body?: unknown) {
++  const res = await fetch(`${baseUrl}${path}`, {
++    method,
++    headers: { 'Content-Type': 'application/json', ...(tok ? { Authorization: `Bearer ${tok}` } : {}) },
++    body: body === undefined ? undefined : JSON.stringify(body),
++  })
++  const json = await res.json().catch(() => ({}))
++  return { status: res.status, body: json as any }
++}
++
++interface Staff { user: any; staff: any; tok: string }
++async function makeStaff(label: string, operatorId: string, role: 'MANAGER' | 'SELLER' | 'CHECKER'): Promise<Staff> {
++  const user = await prisma.user.create({ data: { name: `${tag} ${label}`, phone: newPhone(), password: 'x', role: 'OPERATOR' } })
++  created.users.add(user.id)
++  const staff = await prisma.operatorStaff.create({ data: { userId: user.id, operatorId, role } })
++  return { user, staff, tok: token(user.id, 'OPERATOR') }
++}
++async function makeUser(label: string, role: 'CUSTOMER' | 'ADMIN', phone = newPhone()) {
++  const user = await prisma.user.create({ data: { name: `${tag} ${label}`, phone, password: 'x', role } })
++  created.users.add(user.id)
++  return { user, tok: token(user.id, role) }
++}
++
++let opA: any, opB: any, opC: any
++let managerA: Staff, sellerA: Staff, sellerA2: Staff, checkerA: Staff, managerB: Staff, sellerB: Staff
++let managerC: Staff, sellerC1: Staff, sellerC2: Staff
++let customer: { user: any; tok: string }, admin: { tok: string }
++let busA: any, busB: any, busC: any, route: any, routeWithPickups: any, pickupA: any, pickupB: any
++
++/** A new trip (10 seats, ETB 100 a seat) so each test has its own empty seat map. */
++let tripCounter = 0
++async function newTrip(bus: any, opts: { routeId?: string; hoursAhead?: number; status?: 'OPEN' | 'CLOSED' } = {}) {
++  const dep = new Date(Date.now() + (opts.hoursAhead ?? 48) * 3600 * 1000 + tripCounter++ * 60000)
++  return prisma.schedule.create({
++    data: {
++      routeId: opts.routeId ?? route.id, busId: bus.id, departureTime: dep,
++      arrivalTime: new Date(dep.getTime() + 7200000), price: 100, status: opts.status ?? 'OPEN',
++    },
++  })
++}
++
++const sale = (tripId: string, over: Record<string, unknown> = {}) => ({
++  scheduleId: tripId, seatNumbers: ['01'], passengerName: 'Abebe Kebede', passengerPhone: newPhone(),
++  method: 'CASH', ...over,
++})
++const sell = (tok: string, body: unknown) => api('POST', '/api/v1/counter/sales', tok, body)
++
++describe.skipIf(!TEST_URL)('counter sales (database, real routes)', () => {
++  beforeAll(async () => {
++    ;({ prisma } = await import('../src/lib/prisma'))
++    const app = express()
++    app.use(express.json())
++    app.use('/api/v1/auth', (await import('../src/routes/auth.routes')).default)
++    app.use('/api/v1/operator', (await import('../src/routes/operator.routes')).default)
++    app.use('/api/v1/schedules', (await import('../src/routes/schedule.routes')).default)
++    app.use('/api/v1/bookings', (await import('../src/routes/booking.routes')).default)
++    app.use('/api/v1/payments', (await import('../src/routes/payment.routes')).default)
++    app.use('/api/v1/counter', (await import('../src/routes/counter.routes')).default)
++    app.use('/api/v1/tickets', (await import('../src/routes/ticket.routes')).default)
++    server = http.createServer(app)
++    await new Promise<void>((r) => server.listen(0, r))
++    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
++
++    opA = await prisma.operator.create({ data: { companyName: `${tag} A`, licenseNo: `${tag}-A`, phone: '0900000001' } })
++    opB = await prisma.operator.create({ data: { companyName: `${tag} B`, licenseNo: `${tag}-B`, phone: '0900000002' } })
++    opC = await prisma.operator.create({ data: { companyName: `${tag} C`, licenseNo: `${tag}-C`, phone: '0900000003' } })
++    created.operators.push(opA.id, opB.id, opC.id)
++
++    managerA = await makeStaff('manager A', opA.id, 'MANAGER')
++    sellerA = await makeStaff('seller A', opA.id, 'SELLER')
++    sellerA2 = await makeStaff('seller A2', opA.id, 'SELLER')
++    checkerA = await makeStaff('checker A', opA.id, 'CHECKER')
++    managerB = await makeStaff('manager B', opB.id, 'MANAGER')
++    sellerB = await makeStaff('seller B', opB.id, 'SELLER')
++    managerC = await makeStaff('manager C', opC.id, 'MANAGER')
++    sellerC1 = await makeStaff('seller C1', opC.id, 'SELLER')
++    sellerC2 = await makeStaff('seller C2', opC.id, 'SELLER')
++    customer = await makeUser('passenger', 'CUSTOMER')
++    admin = await makeUser('admin', 'ADMIN')
++
++    route = await prisma.route.create({ data: { fromCity: `${tag}-From`, toCity: `${tag}-To`, distanceKm: 100, estimatedDurationMin: 120 } })
++    routeWithPickups = await prisma.route.create({ data: { fromCity: `${tag}-From2`, toCity: `${tag}-To2`, distanceKm: 100, estimatedDurationMin: 120 } })
++    created.routes.push(route.id, routeWithPickups.id)
++    busA = await prisma.bus.create({ data: { operatorId: opA.id, plateNumber: `${tag}-A1`, totalSeats: 10 } })
++    busB = await prisma.bus.create({ data: { operatorId: opB.id, plateNumber: `${tag}-B1`, totalSeats: 10 } })
++    busC = await prisma.bus.create({ data: { operatorId: opC.id, plateNumber: `${tag}-C1`, totalSeats: 10 } })
++    created.buses.push(busA.id, busB.id, busC.id)
++    // Company A has a pickup point on the second route; company B has one too
++    pickupA = await prisma.pickupPoint.create({ data: { operatorId: opA.id, routeId: routeWithPickups.id, name: `${tag} Meskel`, offsetMin: 15 } })
++    pickupB = await prisma.pickupPoint.create({ data: { operatorId: opB.id, routeId: routeWithPickups.id, name: `${tag} Bole`, offsetMin: 10 } })
++    created.points.push(pickupA.id, pickupB.id)
++  })
++
++  afterAll(async () => {
++    await new Promise<void>((r) => (server ? server.close(() => r()) : r()))
++    if (prisma) {
++      const trips = await prisma.schedule.findMany({ where: { busId: { in: created.buses } }, select: { id: true } })
++      const tripIds = trips.map((t) => t.id)
++      await prisma.payment.deleteMany({ where: { booking: { scheduleId: { in: tripIds } } } })
++      await prisma.booking.deleteMany({ where: { scheduleId: { in: tripIds } } })
++      await prisma.schedule.deleteMany({ where: { id: { in: tripIds } } })
++      await prisma.pickupPoint.deleteMany({ where: { id: { in: created.points } } })
++      await prisma.bus.deleteMany({ where: { id: { in: created.buses } } })
++      await prisma.route.deleteMany({ where: { id: { in: created.routes } } })
++      await prisma.operator.deleteMany({ where: { id: { in: created.operators } } }) // staff rows cascade
++      await prisma.user.deleteMany({ where: { id: { in: [...created.users] } } })
++      await prisma.$disconnect()
++    }
++  })
++
++  // ─── Selling ────────────────────────────────────────────
++  it('lets a seller sell a ticket for cash, with the price worked out by the server', async () => {
++    const trip = await newTrip(busA)
++    const out = await sell(sellerA.tok, { ...sale(trip.id, { seatNumbers: ['01', '02'] }), totalPrice: 1, price: 1 })
++    expect(out.status).toBe(201)
++    const b = out.body.data.booking
++    expect(b).toMatchObject({ status: 'CONFIRMED', source: 'COUNTER', totalPrice: 200, passengerName: 'Abebe Kebede' })
++    expect(b.seatNumbers).toEqual(['01', '02'])
++    expect(b.payment).toMatchObject({ method: 'CASH', amount: 200, reference: null })
++    expect(b.soldByStaffId).toBe(sellerA.staff.id)
++    expect(b.ticketCode).toMatch(/^[A-HJ-NP-Z2-9]{8}$/)
++
++    // The seats now show as taken to everyone
++    const seats = await api('GET', `/api/v1/schedules/${trip.id}/seats`)
++    expect(seats.body.data.bookedSeats).toEqual(expect.arrayContaining(['01', '02']))
++  })
++
++  it('lets a manager sell too', async () => {
++    const trip = await newTrip(busA)
++    expect((await sell(managerA.tok, sale(trip.id))).status).toBe(201)
++  })
++
++  it('requires a valid passenger name and phone number, and stores the phone in one form', async () => {
++    const trip = await newTrip(busA)
++    expect((await sell(sellerA.tok, sale(trip.id, { passengerPhone: undefined }))).status).toBe(400)
++    expect((await sell(sellerA.tok, sale(trip.id, { passengerPhone: '12345' }))).status).toBe(400)
++    expect((await sell(sellerA.tok, sale(trip.id, { passengerName: ' ' }))).status).toBe(400)
++    const ok = await sell(sellerA.tok, sale(trip.id, { passengerPhone: '+251911223344' }))
++    expect(ok.status).toBe(201)
++    expect(ok.body.data.booking.passengerPhone).toBe('0911223344')
++  })
++
++  it('needs the receipt number for Telebirr, CBE Birr and bank, but not for cash', async () => {
++    const trip = await newTrip(busA)
++    for (const method of ['TELEBIRR', 'CBE_BIRR', 'BANK_TRANSFER']) {
++      expect((await sell(sellerA.tok, sale(trip.id, { method }))).status).toBe(400)
++      expect((await sell(sellerA.tok, sale(trip.id, { method, reference: 'ab' }))).status).toBe(400)
++    }
++    expect((await sell(sellerA.tok, sale(trip.id, { method: 'CASH', reference: newRef() }))).status).toBe(400)
++    expect((await sell(sellerA.tok, sale(trip.id, { method: 'CARD', reference: newRef() }))).status).toBe(400)
++    const ref = newRef()
++    const ok = await sell(sellerA.tok, sale(trip.id, { method: 'TELEBIRR', reference: ` ${ref.toLowerCase()} ` }))
++    expect(ok.status).toBe(201)
++    expect(ok.body.data.booking.payment).toMatchObject({ method: 'TELEBIRR', reference: ref })
++  })
++
++  it('does not accept the same receipt number twice for one payment method', async () => {
++    const trip = await newTrip(busA)
++    const ref = newRef()
++    expect((await sell(sellerA.tok, sale(trip.id, { seatNumbers: ['01'], method: 'TELEBIRR', reference: ref }))).status).toBe(201)
++    const again = await sell(sellerA2.tok, sale(trip.id, { seatNumbers: ['02'], method: 'TELEBIRR', reference: ref.toLowerCase() }))
++    expect(again.status).toBe(409)
++    expect(again.body.error).toMatch(/already used/i)
++    // The failed sale took no seat
++    expect((await sell(sellerA.tok, sale(trip.id, { seatNumbers: ['02'] }))).status).toBe(201)
++    // The same number under a different method is a different receipt
++    expect((await sell(sellerA.tok, sale(trip.id, { seatNumbers: ['03'], method: 'CBE_BIRR', reference: ref }))).status).toBe(201)
++  })
++
++  it('lets only one of two simultaneous sales use the same receipt number', async () => {
++    const trip = await newTrip(busA)
++    const ref = newRef()
++    const results = await Promise.all([
++      sell(sellerA.tok, sale(trip.id, { seatNumbers: ['01'], method: 'BANK_TRANSFER', reference: ref })),
++      sell(sellerA2.tok, sale(trip.id, { seatNumbers: ['02'], method: 'BANK_TRANSFER', reference: ref })),
++    ])
++    expect(results.map((r) => r.status).sort()).toEqual([201, 409])
++    expect(await prisma.payment.count({ where: { method: 'BANK_TRANSFER', reference: ref } })).toBe(1)
++  })
++
++  it('does not sell a seat that is already taken, or does not exist, or a seat twice', async () => {
++    const trip = await newTrip(busA)
++    expect((await sell(sellerA.tok, sale(trip.id, { seatNumbers: ['05'] }))).status).toBe(201)
++    const taken = await sell(sellerA2.tok, sale(trip.id, { seatNumbers: ['05'] }))
++    expect(taken.status).toBe(409)
++    expect(taken.body.error).toMatch(/already booked/i)
++    expect((await sell(sellerA.tok, sale(trip.id, { seatNumbers: ['99'] }))).status).toBe(400)
++    expect((await sell(sellerA.tok, sale(trip.id, { seatNumbers: ['06', '06'] }))).status).toBe(400)
++    expect((await sell(sellerA.tok, sale(trip.id, { seatNumbers: [] }))).status).toBe(400)
++  })
++
++  it('never gives the same seat to a counter sale and an online booking at the same moment', async () => {
++    const trip = await newTrip(busA)
++    for (let i = 1; i <= 6; i++) {
++      const seat = String(i).padStart(2, '0')
++      const [counter, online] = await Promise.all([
++        sell(sellerA.tok, sale(trip.id, { seatNumbers: [seat] })),
++        api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: [seat] }),
++      ])
++      expect([counter.status, online.status].sort()).toEqual([201, 409])
++    }
++    // No seat was given out twice
++    const all = await prisma.booking.findMany({ where: { scheduleId: trip.id, status: { in: ['PENDING', 'CONFIRMED'] } } })
++    const seats = all.flatMap((b) => b.seatNumbers)
++    expect(new Set(seats).size).toBe(seats.length)
++    expect(seats).toHaveLength(6)
++  })
++
++  it('never gives the same seat to two counter sellers at the same moment', async () => {
++    const trip = await newTrip(busA)
++    const results = await Promise.all(
++      [sellerA, sellerA2, managerA, sellerA, sellerA2].map((s) => sell(s.tok, sale(trip.id, { seatNumbers: ['07'] })))
++    )
++    expect(results.filter((r) => r.status === 201)).toHaveLength(1)
++    expect(results.filter((r) => r.status === 409)).toHaveLength(4)
++  })
++
++  it('refuses closed and departed trips', async () => {
++    const closed = await newTrip(busA, { status: 'CLOSED' })
++    const c = await sell(sellerA.tok, sale(closed.id))
++    expect(c.status).toBe(409)
++    const gone = await newTrip(busA)
++    await prisma.schedule.update({ where: { id: gone.id }, data: { departureTime: new Date(Date.now() - 3600000) } })
++    expect((await sell(sellerA.tok, sale(gone.id))).status).toBe(400)
++  })
++
++  it('requires a pickup point when the company has them on that route, and only its own', async () => {
++    const trip = await newTrip(busA, { routeId: routeWithPickups.id })
++    const missing = await sell(sellerA.tok, sale(trip.id))
++    expect(missing.status).toBe(400)
++    expect(missing.body.error).toMatch(/pickup/i)
++    // Another company's pickup point is not allowed
++    expect((await sell(sellerA.tok, sale(trip.id, { pickupPointId: pickupB.id }))).status).toBe(400)
++    const ok = await sell(sellerA.tok, sale(trip.id, { pickupPointId: pickupA.id }))
++    expect(ok.status).toBe(201)
++    expect(ok.body.data.booking.pickupPoint.name).toBe(pickupA.name)
++  })
++
++  it('ties a ticket to the passenger account with that phone, in either written form', async () => {
++    const trip = await newTrip(busA)
++    const phone = customer.user.phone // 09XXXXXXXX
++    const plus = `+251${phone.slice(1)}`
++    const walkIn = await sell(sellerA.tok, sale(trip.id, { seatNumbers: ['01'], passengerPhone: plus }))
++    expect(walkIn.body.data.booking.userId).toBe(customer.user.id)
++    const stranger = await sell(sellerA.tok, sale(trip.id, { seatNumbers: ['02'] }))
++    expect(stranger.body.data.booking.userId).toBeNull()
++
++    const mine = await api('GET', '/api/v1/bookings/my', customer.tok)
++    const ids = mine.body.data.bookings.map((b: any) => b.id)
++    expect(ids).toContain(walkIn.body.data.booking.id)
++    expect(ids).not.toContain(stranger.body.data.booking.id)
++
++    // The passenger can't cancel it or pay for it again: only staff can void it
++    const cancel = await api('PATCH', `/api/v1/bookings/${walkIn.body.data.booking.id}/cancel`, customer.tok)
++    expect(cancel.status).toBe(403)
++    const pay = await api('POST', '/api/v1/payments/initialize', customer.tok, { bookingId: walkIn.body.data.booking.id })
++    expect(pay.status).toBe(400)
++    expect(pay.body.error).toMatch(/counter/i)
++  })
++
++  // ─── Who may do what ────────────────────────────────────
++  it('lets only sellers and managers sell: not checkers, passengers, the admin, or anonymous callers', async () => {
++    const trip = await newTrip(busA)
++    expect((await sell(checkerA.tok, sale(trip.id))).status).toBe(403)
++    expect((await sell(customer.tok, sale(trip.id))).status).toBe(403)
++    expect((await sell(admin.tok, sale(trip.id))).status).toBe(403)
++    const anon = await api('POST', '/api/v1/counter/sales', undefined, sale(trip.id))
++    expect(anon.status).toBe(401)
++    expect(await prisma.booking.count({ where: { scheduleId: trip.id } })).toBe(0)
++  })
++
++  it('keeps companies apart: no selling on, listing, voiding or reporting another company', async () => {
++    const tripA = await newTrip(busA)
++    const tripB = await newTrip(busB)
++    // Seller B can't sell on company A's trip; to them it doesn't exist
++    expect((await sell(sellerB.tok, sale(tripA.id))).status).toBe(404)
++    // A company id sent in the request is ignored
++    expect((await sell(sellerB.tok, { ...sale(tripB.id), operatorId: opA.id })).status).toBe(201)
++
++    const made = await sell(sellerA.tok, sale(tripA.id))
++    const saleId = made.body.data.booking.id
++    expect((await api('POST', `/api/v1/counter/sales/${saleId}/void`, sellerB.tok, { reason: 'trying' })).status).toBe(404)
++    expect((await api('POST', `/api/v1/counter/sales/${saleId}/void`, managerB.tok, { reason: 'trying' })).status).toBe(404)
++
++    const listB = await api('GET', '/api/v1/counter/sales', managerB.tok)
++    expect(listB.body.data.sales.map((s: any) => s.id)).not.toContain(saleId)
++    const tripsB = await api('GET', `/api/v1/counter/trips?date=${new Date(tripA.departureTime.getTime() + 3 * 3600000).toISOString().slice(0, 10)}`, sellerB.tok)
++    expect(tripsB.body.data.trips.map((t: any) => t.id)).not.toContain(tripA.id)
++    expect((await prisma.booking.findUniqueOrThrow({ where: { id: saleId } })).status).toBe('CONFIRMED')
++  })
++
++  it('stops a deactivated seller at once, and lets them back in when restored', async () => {
++    const trip = await newTrip(busA)
++    const temp = await makeStaff('temp seller', opA.id, 'SELLER')
++    expect((await sell(temp.tok, sale(trip.id, { seatNumbers: ['01'] }))).status).toBe(201)
++    await prisma.operatorStaff.update({ where: { id: temp.staff.id }, data: { active: false } })
++    expect((await sell(temp.tok, sale(trip.id, { seatNumbers: ['02'] }))).status).toBe(403)
++    await prisma.operatorStaff.update({ where: { id: temp.staff.id }, data: { active: true } })
++    expect((await sell(temp.tok, sale(trip.id, { seatNumbers: ['02'] }))).status).toBe(201)
++  })
++
++  // ─── Voiding ────────────────────────────────────────────
++  it('lets a seller void their own sale: frees the seats and the receipt number, and keeps a record', async () => {
++    const trip = await newTrip(busA)
++    const ref = newRef()
++    const made = await sell(sellerA.tok, sale(trip.id, { seatNumbers: ['01'], method: 'TELEBIRR', reference: ref }))
++    const id = made.body.data.booking.id
++    expect(made.body.data.booking.canVoid).toBe(true)
++
++    expect((await api('POST', `/api/v1/counter/sales/${id}/void`, sellerA.tok, {})).status).toBe(400) // needs a reason
++    const voided = await api('POST', `/api/v1/counter/sales/${id}/void`, sellerA.tok, { reason: 'Wrong seat' })
++    expect(voided.status).toBe(200)
++    const row = await prisma.booking.findUniqueOrThrow({ where: { id }, include: { payment: true } })
++    expect(row).toMatchObject({ status: 'CANCELLED', voidReason: 'Wrong seat', voidedByStaffId: sellerA.staff.id })
++    expect(row.voidedAt).toBeInstanceOf(Date)
++    expect(row.payment).toMatchObject({ reference: null, voidedReference: ref })
++
++    // Same seat and the same real receipt can be used for the corrected sale
++    const again = await sell(sellerA.tok, sale(trip.id, { seatNumbers: ['01'], method: 'TELEBIRR', reference: ref }))
++    expect(again.status).toBe(201)
++
++    // A second void does nothing
++    const twice = await api('POST', `/api/v1/counter/sales/${id}/void`, sellerA.tok, { reason: 'again' })
++    expect(twice.status).toBe(409)
++  })
++
++  it('lets two simultaneous voids of the same sale happen only once', async () => {
++    const trip = await newTrip(busA)
++    const made = await sell(sellerA.tok, sale(trip.id))
++    const id = made.body.data.booking.id
++    const results = await Promise.all([
++      api('POST', `/api/v1/counter/sales/${id}/void`, sellerA.tok, { reason: 'first' }),
++      api('POST', `/api/v1/counter/sales/${id}/void`, managerA.tok, { reason: 'second' }),
++    ])
++    expect(results.map((r) => r.status).sort()).toEqual([200, 409])
++  })
++
++  it("stops a seller voiding someone else's sale, or their own after 15 minutes; managers may", async () => {
++    const trip = await newTrip(busA)
++    const mine = (await sell(sellerA.tok, sale(trip.id, { seatNumbers: ['01'] }))).body.data.booking.id
++    const other = (await sell(sellerA2.tok, sale(trip.id, { seatNumbers: ['02'] }))).body.data.booking
++    expect(other.canVoid).toBe(true) // seller A2 made it, so for A2 it can be voided
++
++    // Seller A can't void seller A2's sale
++    const notMine = await api('POST', `/api/v1/counter/sales/${other.id}/void`, sellerA.tok, { reason: 'not mine' })
++    expect(notMine.status).toBe(403)
++
++    // After 15 minutes the seller is refused, the manager is not
++    await prisma.booking.update({ where: { id: mine }, data: { createdAt: new Date(Date.now() - 16 * 60 * 1000) } })
++    const late = await api('POST', `/api/v1/counter/sales/${mine}/void`, sellerA.tok, { reason: 'too late' })
++    expect(late.status).toBe(403)
++    expect(late.body.error).toMatch(/15 minutes/)
++    const list = await api('GET', '/api/v1/counter/sales', sellerA.tok)
++    expect(list.body.data.sales.find((s: any) => s.id === mine).canVoid).toBe(false)
++    const byManager = await api('POST', `/api/v1/counter/sales/${mine}/void`, managerA.tok, { reason: 'manager approved' })
++    expect(byManager.status).toBe(200)
++  })
++
++  it('does not allow voiding after the bus has left, even for a manager', async () => {
++    const trip = await newTrip(busA)
++    const id = (await sell(sellerA.tok, sale(trip.id))).body.data.booking.id
++    await prisma.schedule.update({ where: { id: trip.id }, data: { departureTime: new Date(Date.now() - 60000) } })
++    const out = await api('POST', `/api/v1/counter/sales/${id}/void`, managerA.tok, { reason: 'late' })
++    expect(out.status).toBe(400)
++  })
++
++  it('does not let online bookings be voided through the counter', async () => {
++    const trip = await newTrip(busA)
++    const online = await api('POST', '/api/v1/bookings', customer.tok, { scheduleId: trip.id, seatNumbers: ['01'] })
++    expect(online.status).toBe(201)
++    const out = await api('POST', `/api/v1/counter/sales/${online.body.data.booking.id}/void`, managerA.tok, { reason: 'nope' })
++    expect(out.status).toBe(404)
++  })
++
++  // ─── Lists and reports ──────────────────────────────────
++  it("shows a seller only their own sales, and a manager the company's", async () => {
++    const trip = await newTrip(busA)
++    const a = (await sell(sellerA.tok, sale(trip.id, { seatNumbers: ['01'] }))).body.data.booking.id
++    const a2 = (await sell(sellerA2.tok, sale(trip.id, { seatNumbers: ['02'] }))).body.data.booking.id
++    const forA = (await api('GET', '/api/v1/counter/sales', sellerA.tok)).body.data.sales.map((s: any) => s.id)
++    expect(forA).toContain(a)
++    expect(forA).not.toContain(a2)
++    const forManager = (await api('GET', '/api/v1/counter/sales', managerA.tok)).body.data.sales.map((s: any) => s.id)
++    expect(forManager).toEqual(expect.arrayContaining([a, a2]))
++    expect((await api('GET', '/api/v1/counter/sales?date=nope', managerA.tok)).status).toBe(400)
++  })
++
++  it('lists the trips a seller can sell, for their own company only', async () => {
++    const trip = await newTrip(busA, { hoursAhead: 5 })
++    const day = new Date(trip.departureTime.getTime() + 3 * 3600000).toISOString().slice(0, 10) // Addis day
++    const out = await api('GET', `/api/v1/counter/trips?date=${day}`, sellerA.tok)
++    expect(out.status).toBe(200)
++    const found = out.body.data.trips.find((t: any) => t.id === trip.id)
++    expect(found).toMatchObject({ availableSeats: 10 })
++    expect(found.route.fromCity).toBe(route.fromCity)
++    // A closed trip is not offered
++    await prisma.schedule.update({ where: { id: trip.id }, data: { status: 'CLOSED' } })
++    const after = await api('GET', `/api/v1/counter/trips?date=${day}`, sellerA.tok)
++    expect(after.body.data.trips.map((t: any) => t.id)).not.toContain(trip.id)
++  })
++
++  it('gives managers a daily report per seller and payment method, with voids kept apart', async () => {
++    const trip = await newTrip(busC)
++    await sell(sellerC1.tok, sale(trip.id, { seatNumbers: ['01', '02'], method: 'CASH' }))
++    await sell(sellerC1.tok, sale(trip.id, { seatNumbers: ['03'], method: 'TELEBIRR', reference: newRef() }))
++    await sell(sellerC2.tok, sale(trip.id, { seatNumbers: ['04'], method: 'BANK_TRANSFER', reference: newRef() }))
++    const toVoid = (await sell(sellerC2.tok, sale(trip.id, { seatNumbers: ['05'], method: 'CASH' }))).body.data.booking.id
++    expect((await api('POST', `/api/v1/counter/sales/${toVoid}/void`, sellerC2.tok, { reason: 'customer left' })).status).toBe(200)
++
++    const r = (await api('GET', '/api/v1/counter/report', managerC.tok)).body.data
++    expect(r.totals).toEqual({ tickets: 3, seats: 4, total: 400 })
++    expect(r.byMethod.CASH).toEqual({ tickets: 1, seats: 2, total: 200 })
++    expect(r.byMethod.TELEBIRR).toEqual({ tickets: 1, seats: 1, total: 100 })
++    expect(r.byMethod.BANK_TRANSFER).toEqual({ tickets: 1, seats: 1, total: 100 })
++    expect(r.voided).toEqual({ tickets: 1, seats: 1, total: 100 })
++    const c1 = r.bySeller.find((s: any) => s.staffId === sellerC1.staff.id)
++    const c2 = r.bySeller.find((s: any) => s.staffId === sellerC2.staff.id)
++    expect(c1).toMatchObject({ tickets: 2, seats: 3, total: 300 })
++    expect(c1.byMethod.CASH.total).toBe(200)
++    expect(c2).toMatchObject({ tickets: 1, seats: 1, total: 100 })
++
++    // Only managers see it, and only their own company's numbers
++    expect((await api('GET', '/api/v1/counter/report', sellerC1.tok)).status).toBe(403)
++    expect((await api('GET', '/api/v1/counter/report', checkerA.tok)).status).toBe(403)
++    expect((await api('GET', '/api/v1/counter/report', admin.tok)).status).toBe(403)
++    const other = (await api('GET', '/api/v1/counter/report', managerB.tok)).body.data
++    expect(other.bySeller.map((s: any) => s.staffId)).not.toContain(sellerC1.staff.id)
++  })
++
++  // ─── Public ticket ──────────────────────────────────────
++  it('shows a ticket to anyone with its code, without the phone number, and marks it void after a void', async () => {
++    const trip = await newTrip(busA, { routeId: routeWithPickups.id })
++    const phone = newPhone()
++    const made = await sell(sellerA.tok, sale(trip.id, { seatNumbers: ['04', '05'], passengerPhone: phone, pickupPointId: pickupA.id }))
++    const { id, ticketCode } = made.body.data.booking
++
++    const view = await api('GET', `/api/v1/tickets/${ticketCode}`) // no token
++    expect(view.status).toBe(200)
++    const t = view.body.data.ticket
++    expect(t).toMatchObject({
++      code: ticketCode, status: 'VALID', passengerName: 'Abebe Kebede', seatNumbers: ['04', '05'],
++      totalPrice: 200, companyName: opA.companyName, fromCity: routeWithPickups.fromCity,
++    })
++    expect(t.pickupPoint.name).toBe(pickupA.name)
++    expect(t.qrCode).toMatch(/^data:image\/png;base64,/)
++    expect(JSON.stringify(view.body)).not.toContain(phone.slice(2))
++    expect(JSON.stringify(view.body)).not.toContain('passengerPhone')
++
++    expect((await api('GET', `/api/v1/tickets/${ticketCode.toLowerCase()}`)).status).toBe(200)
++    expect((await api('GET', '/api/v1/tickets/AAAAAAAA')).status).toBe(404)
++    expect((await api('GET', '/api/v1/tickets/short')).status).toBe(404)
++
++    await api('POST', `/api/v1/counter/sales/${id}/void`, sellerA.tok, { reason: 'test' })
++    const after = await api('GET', `/api/v1/tickets/${ticketCode}`)
++    expect(after.body.data.ticket.status).toBe('VOIDED')
++  })
++
++  it('gives every ticket its own code', async () => {
++    const trip = await newTrip(busA)
++    const codes = new Set<string>()
++    for (let i = 1; i <= 8; i++) {
++      const out = await sell(sellerA.tok, sale(trip.id, { seatNumbers: [String(i).padStart(2, '0')] }))
++      codes.add(out.body.data.booking.ticketCode)
++    }
++    expect(codes.size).toBe(8)
++  })
++
++  // ─── Existing screens still work with walk-in bookings ──
++  it('keeps the operator and admin booking lists working when a booking has no account', async () => {
++    const trip = await newTrip(busA)
++    const made = await sell(sellerA.tok, sale(trip.id, { passengerName: 'Walk In Person' }))
++    const id = made.body.data.booking.id
++    expect(made.body.data.booking.userId).toBeNull()
++
++    const operatorList = await api('GET', '/api/v1/operator/bookings', managerA.tok)
++    expect(operatorList.status).toBe(200)
++    const row = operatorList.body.data.bookings.find((b: any) => b.id === id)
++    expect(row).toMatchObject({ user: null, passengerName: 'Walk In Person', source: 'COUNTER' })
++    expect(operatorList.body.data.totalRevenue).toBeGreaterThanOrEqual(100)
++
++    const adminList = await api('GET', '/api/v1/bookings', admin.tok)
++    expect(adminList.status).toBe(200)
++    const adminRow = adminList.body.data.bookings.find((b: any) => b.id === id)
++    expect(adminRow).toMatchObject({ user: null, passengerName: 'Walk In Person' })
++  })
++})
+diff --git a/apps/web/src/app/admin/bookings/page.tsx b/apps/web/src/app/admin/bookings/page.tsx
+index 8c92678..b957eba 100644
+--- a/apps/web/src/app/admin/bookings/page.tsx
++++ b/apps/web/src/app/admin/bookings/page.tsx
+@@ -12,7 +12,11 @@ interface Booking {
+   totalPrice: number
+   status: string
+   createdAt: string
+-  user: { name: string; phone: string }
++  // Counter (walk-in) sales may have no account: then passengerName/passengerPhone are used
++  user: { name: string; phone: string } | null
++  passengerName?: string | null
++  passengerPhone?: string | null
++  source?: 'ONLINE' | 'COUNTER'
+   schedule: {
+     departureTime: string
+     route: { fromCity: string; toCity: string }
+@@ -88,8 +92,9 @@ export default function AdminBookingsPage() {
+               return (
+                 <tr key={booking.id} style={{ borderTop: '1px solid #F5F5F5' }}>
+                   <td style={{ padding: '14px 20px' }}>
+-                    <p style={{ fontSize: '13px', fontWeight: 600, color: '#1a1a1a' }}>{booking.user.name}</p>
+-                    <p style={{ fontSize: '11px', color: '#bbb' }}>{booking.user.phone}</p>
++                    <p style={{ fontSize: '13px', fontWeight: 600, color: '#1a1a1a' }}>{booking.user?.name ?? booking.passengerName ?? '—'}
++                      {booking.source === 'COUNTER' && <span style={{ marginLeft: '6px', fontSize: '10px', background: '#FFF8E5', color: '#9A6B00', padding: '2px 6px', borderRadius: '10px' }}>Counter</span>}</p>
++                    <p style={{ fontSize: '11px', color: '#bbb' }}>{booking.user?.phone ?? booking.passengerPhone ?? ''}</p>
+                   </td>
+                   <td style={{ padding: '14px 20px', fontSize: '13px', color: '#555' }}>
+                     {booking.schedule.route.fromCity} → {booking.schedule.route.toCity}
+diff --git a/apps/web/src/app/bookings/[id]/page.tsx b/apps/web/src/app/bookings/[id]/page.tsx
+index a9e13c5..2b34071 100644
+--- a/apps/web/src/app/bookings/[id]/page.tsx
++++ b/apps/web/src/app/bookings/[id]/page.tsx
+@@ -17,6 +17,8 @@ interface BookingDetail {
+   createdAt: string
+   expiresAt?: string | null
+   payment?: { status: string } | null
++  source?: 'ONLINE' | 'COUNTER'
++  ticketCode?: string | null
+   pickupPoint?: { name: string; offsetMin: number } | null
+   dropoffPoint?: { name: string } | null
+   schedule: {
+@@ -169,7 +171,18 @@ export default function BookingDetailPage() {
+             This booking expired or was cancelled. Please choose your seats again.
+           </div>
+         )}
+-        {booking.status === 'CANCELLED' && isPaid && (
++        {booking.source === 'COUNTER' && booking.status !== 'CANCELLED' && booking.ticketCode && (
++          <div style={{ background: '#F0FFF4', border: '1px solid #BBF7D0', borderRadius: '12px', padding: '14px 16px', marginBottom: '16px', fontSize: '13px', color: '#166534', lineHeight: 1.5 }}>
++            This ticket was bought at the bus station and is already paid. Ticket code: <strong>{booking.ticketCode}</strong>.{' '}
++            <a href={`/ticket/${booking.ticketCode}`} style={{ color: '#166534', fontWeight: 700 }}>Open ticket</a>
++          </div>
++        )}
++        {booking.source === 'COUNTER' && booking.status === 'CANCELLED' && (
++          <div style={{ background: '#FFF5F5', border: '1px solid #FECACA', borderRadius: '12px', padding: '14px 16px', marginBottom: '16px', fontSize: '13px', color: '#991B1B', lineHeight: 1.5 }}>
++            This ticket was cancelled by the bus company. Please contact them about your money.
++          </div>
++        )}
++        {booking.source !== 'COUNTER' && booking.status === 'CANCELLED' && isPaid && (
+           <div style={{ background: '#FFF5F5', border: '1px solid #FECACA', borderRadius: '12px', padding: '14px 16px', marginBottom: '16px', fontSize: '13px', color: '#991B1B', lineHeight: 1.5 }}>
+             We received your payment, but these seats were taken before it was confirmed. Please contact support to get a refund.
+           </div>
+@@ -294,7 +307,7 @@ export default function BookingDetailPage() {
+             </button>
+           )}
+ 
+-          {(booking.status === 'CONFIRMED' || booking.status === 'PENDING') && (
++          {booking.source !== 'COUNTER' && (booking.status === 'CONFIRMED' || booking.status === 'PENDING') && (
+             <button
+               onClick={handleCancel}
+               style={{ flex: 1, background: '#FFF5F5', color: '#C0392B', border: '1px solid #FECACA', padding: '14px', borderRadius: '12px', fontSize: '14px', fontWeight: 500, cursor: 'pointer' }}
+diff --git a/apps/web/src/app/counter/page.tsx b/apps/web/src/app/counter/page.tsx
+index c53f55c..739a7aa 100644
+--- a/apps/web/src/app/counter/page.tsx
++++ b/apps/web/src/app/counter/page.tsx
+@@ -1,19 +1,334 @@
+ 'use client'
+ 
++import { useCallback, useEffect, useMemo, useState } from 'react'
+ import StaffShell from '@/components/StaffShell'
++import CounterSalesList from '@/components/CounterSalesList'
++import { api } from '@/lib/api'
++import { CounterSale, METHOD_LABEL, addisDay, errorOf } from '@/lib/counter'
++import { formatTime, formatPrice, formatDate } from '@bus/utils'
++import { Printer, Share2, CheckCircle2 } from 'lucide-react'
++import toast from 'react-hot-toast'
++
++interface Trip {
++  id: string
++  price: number
++  departureTime: string
++  arrivalTime: string
++  availableSeats: number
++  route: { fromCity: string; toCity: string }
++  bus: { plateNumber: string; busType: string; totalSeats: number }
++}
++interface Point { id: string; name: string; offsetMin: number }
++interface SeatInfo { totalSeats: number; bookedSeats: string[]; pickupPoints: Point[]; dropoffPoints: Point[] }
++
++const METHODS = ['CASH', 'TELEBIRR', 'CBE_BIRR', 'BANK_TRANSFER'] as const
++
++const field: React.CSSProperties = {
++  width: '100%', border: '1px solid #E5E5E5', borderRadius: '10px', padding: '13px 14px',
++  fontSize: '16px', outline: 'none', background: 'white', boxSizing: 'border-box',
++}
++const label: React.CSSProperties = {
++  display: 'block', fontSize: '12px', fontWeight: 600, color: '#555', marginBottom: '6px',
++  textTransform: 'uppercase', letterSpacing: '0.5px',
++}
++const card: React.CSSProperties = {
++  background: 'white', border: '1px solid #EEEEEE', borderRadius: '16px', padding: '18px', marginBottom: '16px',
++}
+ 
+ export default function CounterPage() {
+   return (
+-    <StaffShell allowed={['SELLER', 'MANAGER', 'ADMIN']} title="Counter sales">
+-      <div style={{ background: 'white', border: '1px solid #EEEEEE', borderRadius: '16px', padding: '24px' }}>
+-        <p style={{ fontSize: '15px', color: '#1a1a1a', fontWeight: 600, marginBottom: '8px' }}>
+-          Your account is ready.
+-        </p>
+-        <p style={{ fontSize: '14px', color: '#666', lineHeight: 1.6 }}>
+-          Selling tickets at the counter (cash and digital) is the next feature we are building.
+-          It will appear on this page.
+-        </p>
+-      </div>
++    <StaffShell allowed={['SELLER', 'MANAGER']} title="Counter sales">
++      <CounterSales />
+     </StaffShell>
+   )
+ }
++
++function CounterSales() {
++  const [tab, setTab] = useState<'sell' | 'sales'>('sell')
++  const [date, setDate] = useState(addisDay())
++  const [trips, setTrips] = useState<Trip[]>([])
++  const [loadingTrips, setLoadingTrips] = useState(true)
++  const [trip, setTrip] = useState<Trip | null>(null)
++  const [seatInfo, setSeatInfo] = useState<SeatInfo | null>(null)
++  const [seats, setSeats] = useState<string[]>([])
++  const [pickupId, setPickupId] = useState('')
++  const [dropoffId, setDropoffId] = useState('')
++  const [name, setName] = useState('')
++  const [phone, setPhone] = useState('')
++  const [method, setMethod] = useState<(typeof METHODS)[number]>('CASH')
++  const [reference, setReference] = useState('')
++  const [submitting, setSubmitting] = useState(false)
++  const [sold, setSold] = useState<CounterSale | null>(null)
++  const [sales, setSales] = useState<CounterSale[]>([])
++
++  const loadTrips = useCallback(async () => {
++    setLoadingTrips(true)
++    try {
++      const res = await api.get('/counter/trips', { params: { date } })
++      setTrips(res.data.data.trips)
++    } catch (err) {
++      toast.error(errorOf(err, 'Failed to load trips'))
++    } finally {
++      setLoadingTrips(false)
++    }
++  }, [date])
++
++  const loadSeats = useCallback(async (id: string) => {
++    try {
++      const res = await api.get(`/schedules/${id}/seats`)
++      setSeatInfo(res.data.data)
++    } catch {
++      toast.error('Failed to load seats')
++    }
++  }, [])
++
++  const loadSales = useCallback(async () => {
++    try {
++      const res = await api.get('/counter/sales', { params: { date: addisDay() } })
++      setSales(res.data.data.sales)
++    } catch (err) {
++      toast.error(errorOf(err, 'Failed to load sales'))
++    }
++  }, [])
++
++  useEffect(() => { loadTrips() }, [loadTrips])
++  useEffect(() => { if (tab === 'sales') loadSales() }, [tab, loadSales])
++
++  const chooseTrip = (t: Trip) => {
++    setTrip(t); setSeatInfo(null); setSeats([]); setPickupId(''); setDropoffId('')
++    loadSeats(t.id)
++  }
++
++  const needsPickup = (seatInfo?.pickupPoints.length ?? 0) > 0
++  const needsReference = method !== 'CASH'
++  const total = trip ? trip.price * seats.length : 0
++  const ready = useMemo(
++    () => !!trip && seats.length > 0 && name.trim().length >= 2 && phone.trim().length > 0
++      && (!needsPickup || !!pickupId) && (!needsReference || reference.trim().length >= 4),
++    [trip, seats, name, phone, needsPickup, pickupId, needsReference, reference]
++  )
++
++  const toggleSeat = (seat: string) =>
++    setSeats((cur) => (cur.includes(seat) ? cur.filter((s) => s !== seat) : cur.length >= 10 ? cur : [...cur, seat]))
++
++  const submit = async () => {
++    if (!trip || !ready || submitting) return
++    setSubmitting(true)
++    try {
++      const res = await api.post('/counter/sales', {
++        scheduleId: trip.id, seatNumbers: seats,
++        pickupPointId: pickupId || undefined, dropoffPointId: dropoffId || undefined,
++        passengerName: name.trim(), passengerPhone: phone.trim(),
++        method, reference: needsReference ? reference.trim() : undefined,
++      })
++      setSold(res.data.data.booking)
++      toast.success('Ticket sold')
++    } catch (err) {
++      toast.error(errorOf(err, 'Sale failed'))
++      // The seat may just have been taken: show the latest seat map
++      if (trip) { loadSeats(trip.id); setSeats([]) }
++    } finally {
++      setSubmitting(false)
++    }
++  }
++
++  const sellAnother = () => {
++    setSold(null); setTrip(null); setSeatInfo(null); setSeats([]); setPickupId(''); setDropoffId('')
++    setName(''); setPhone(''); setReference(''); setMethod('CASH')
++    loadTrips()
++  }
++
++  const voidSale = async (sale: CounterSale) => {
++    const reason = window.prompt(`Void ${sale.passengerName}'s ticket? This frees the seats. Give a reason:`)
++    if (!reason) return
++    try {
++      await api.post(`/counter/sales/${sale.id}/void`, { reason })
++      toast.success('Sale voided')
++      loadSales()
++    } catch (err) {
++      toast.error(errorOf(err, 'Could not void this sale'))
++    }
++  }
++
++  const share = async (code: string) => {
++    const url = `${window.location.origin}/ticket/${code}`
++    try {
++      if (navigator.share) await navigator.share({ title: 'Bus ticket', text: 'Your bus ticket', url })
++      else { await navigator.clipboard.writeText(url); toast.success('Ticket link copied') }
++    } catch { /* the person closed the share sheet */ }
++  }
++
++  // ─── Ticket shown after a sale ────────────────────────
++  if (sold) {
++    return (
++      <div>
++        <div style={{ ...card, textAlign: 'center' }}>
++          <CheckCircle2 size={36} color="#2E8B57" style={{ margin: '0 auto 8px' }} />
++          <div style={{ fontSize: '18px', fontWeight: 700, color: '#1a1a1a' }}>Ticket sold</div>
++          <div style={{ fontSize: '13px', color: '#666', margin: '4px 0 14px' }}>
++            {METHOD_LABEL[sold.payment?.method ?? ''] ?? ''} · {formatPrice(sold.totalPrice)}
++          </div>
++          {sold.qrCode && <img src={sold.qrCode} alt="Ticket QR code" width={180} height={180} style={{ margin: '0 auto' }} />}
++          <div style={{ fontSize: '26px', fontWeight: 800, letterSpacing: '4px', color: '#1a1a1a', marginTop: '6px' }}>{sold.ticketCode}</div>
++          <div style={{ fontSize: '15px', fontWeight: 600, marginTop: '14px' }}>{sold.passengerName}</div>
++          <div style={{ fontSize: '13px', color: '#666', marginTop: '4px' }}>
++            {sold.schedule.route.fromCity} → {sold.schedule.route.toCity}<br />
++            {formatDate(sold.schedule.departureTime)} · {formatTime(sold.schedule.departureTime)}<br />
++            Seat{sold.seatNumbers.length > 1 ? 's' : ''} {sold.seatNumbers.join(', ')}
++            {sold.pickupPoint ? <><br />Pickup: {sold.pickupPoint.name}</> : null}
++          </div>
++        </div>
++        <div style={{ display: 'flex', gap: '10px', marginBottom: '10px' }}>
++          <button onClick={() => window.open(`/ticket/${sold.ticketCode}?print=1`, '_blank')}
++            style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: 'white', border: '1px solid #E5E5E5', borderRadius: '12px', padding: '14px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>
++            <Printer size={16} /> Print
++          </button>
++          <button onClick={() => share(sold.ticketCode!)}
++            style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: 'white', border: '1px solid #E5E5E5', borderRadius: '12px', padding: '14px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>
++            <Share2 size={16} /> Share
++          </button>
++        </div>
++        <button onClick={sellAnother}
++          style={{ width: '100%', background: '#C0392B', color: 'white', border: 'none', borderRadius: '12px', padding: '16px', fontSize: '16px', fontWeight: 700, cursor: 'pointer' }}>
++          Sell another ticket
++        </button>
++      </div>
++    )
++  }
++
++  const tabBtn = (id: 'sell' | 'sales', text: string) => (
++    <button onClick={() => setTab(id)}
++      style={{ flex: 1, padding: '12px', border: 'none', borderRadius: '10px', fontSize: '14px', fontWeight: 700, cursor: 'pointer', background: tab === id ? '#1A0A0A' : 'transparent', color: tab === id ? 'white' : '#666' }}>
++      {text}
++    </button>
++  )
++
++  return (
++    <div>
++      <div style={{ display: 'flex', gap: '6px', background: '#EFEFEF', borderRadius: '12px', padding: '4px', marginBottom: '16px' }}>
++        {tabBtn('sell', 'Sell a ticket')}
++        {tabBtn('sales', "Today's sales")}
++      </div>
++
++      {tab === 'sales' && (
++        <>
++          <p style={{ fontSize: '12px', color: '#999', marginBottom: '12px' }}>
++            You can void your own sale within 15 minutes. Ask your manager after that.
++          </p>
++          <CounterSalesList sales={sales} onVoid={voidSale} />
++        </>
++      )}
++
++      {tab === 'sell' && (
++        <>
++          {/* 1. Trip */}
++          <div style={card}>
++            <label style={label}>1. Day and trip</label>
++            <input type="date" value={date} min={addisDay()} onChange={(e) => { setDate(e.target.value || addisDay()); setTrip(null); setSeats([]) }} style={{ ...field, marginBottom: '12px' }} />
++            {loadingTrips && <p style={{ color: '#999', fontSize: '13px' }}>Loading trips...</p>}
++            {!loadingTrips && trips.length === 0 && <p style={{ color: '#999', fontSize: '13px' }}>No open trips on this day.</p>}
++            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
++              {trips.map((t) => {
++                const on = trip?.id === t.id
++                return (
++                  <button key={t.id} onClick={() => chooseTrip(t)} disabled={t.availableSeats === 0}
++                    style={{ textAlign: 'left', padding: '12px 14px', borderRadius: '12px', cursor: t.availableSeats === 0 ? 'not-allowed' : 'pointer', border: on ? '2px solid #C0392B' : '1px solid #E5E5E5', background: on ? '#FFF5F5' : 'white', opacity: t.availableSeats === 0 ? 0.5 : 1 }}>
++                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px' }}>
++                      <span style={{ fontSize: '18px', fontWeight: 700 }}>{formatTime(t.departureTime)}</span>
++                      <span style={{ fontSize: '15px', fontWeight: 700, color: '#C0392B' }}>{formatPrice(t.price)}</span>
++                    </div>
++                    <div style={{ fontSize: '12px', color: '#666' }}>
++                      {t.route.fromCity} → {t.route.toCity} · {t.bus.plateNumber} · {t.availableSeats === 0 ? 'Sold out' : `${t.availableSeats} seats left`}
++                    </div>
++                  </button>
++                )
++              })}
++            </div>
++          </div>
++
++          {/* 2. Seats */}
++          {trip && (
++            <div style={card}>
++              <label style={label}>2. Seats {seats.length > 0 && `(${seats.join(', ')})`}</label>
++              {!seatInfo && <p style={{ color: '#999', fontSize: '13px' }}>Loading seats...</p>}
++              {seatInfo && (
++                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '8px', maxWidth: '320px', margin: '0 auto' }}>
++                  {Array.from({ length: seatInfo.totalSeats }, (_, i) => String(i + 1).padStart(2, '0')).flatMap((seat, i) => {
++                    const taken = seatInfo.bookedSeats.includes(seat)
++                    const on = seats.includes(seat)
++                    const btn = (
++                      <button key={seat} disabled={taken} onClick={() => toggleSeat(seat)}
++                        style={{ height: '46px', borderRadius: '8px', fontSize: '13px', fontWeight: 700, border: on ? 'none' : '1px solid #E0E0E0', cursor: taken ? 'not-allowed' : 'pointer', background: on ? '#C0392B' : taken ? '#CCC' : '#F5F5F5', color: on ? 'white' : taken ? '#888' : '#333' }}>
++                        {seat}
++                      </button>
++                    )
++                    // an aisle after every second seat
++                    return i % 4 === 1 ? [btn, <div key={`aisle-${i}`} />] : [btn]
++                  })}
++                </div>
++              )}
++            </div>
++          )}
++
++          {/* 3. Pickup and drop-off */}
++          {trip && seatInfo && (needsPickup || seatInfo.dropoffPoints.length > 0) && (
++            <div style={card}>
++              {needsPickup && (
++                <>
++                  <label style={label}>3. Pickup point *</label>
++                  <select value={pickupId} onChange={(e) => setPickupId(e.target.value)} style={{ ...field, marginBottom: seatInfo.dropoffPoints.length ? '12px' : 0 }}>
++                    <option value="">Choose where the passenger boards</option>
++                    {seatInfo.pickupPoints.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
++                  </select>
++                </>
++              )}
++              {seatInfo.dropoffPoints.length > 0 && (
++                <>
++                  <label style={label}>Drop-off (optional)</label>
++                  <select value={dropoffId} onChange={(e) => setDropoffId(e.target.value)} style={field}>
++                    <option value="">Not chosen</option>
++                    {seatInfo.dropoffPoints.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
++                  </select>
++                </>
++              )}
++            </div>
++          )}
++
++          {/* 4. Passenger and payment */}
++          {trip && (
++            <div style={card}>
++              <label style={label}>Passenger</label>
++              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" autoComplete="off" style={{ ...field, marginBottom: '10px' }} />
++              <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Phone, like 0911223344" inputMode="tel" autoComplete="off" style={{ ...field, marginBottom: '16px' }} />
++
++              <label style={label}>Payment</label>
++              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: needsReference ? '12px' : 0 }}>
++                {METHODS.map((m) => (
++                  <button key={m} onClick={() => setMethod(m)}
++                    style={{ padding: '13px', borderRadius: '12px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', border: method === m ? '2px solid #C0392B' : '1px solid #E5E5E5', background: method === m ? '#FFF5F5' : 'white', color: method === m ? '#C0392B' : '#444' }}>
++                    {METHOD_LABEL[m]}
++                  </button>
++                ))}
++              </div>
++              {needsReference && (
++                <>
++                  <input value={reference} onChange={(e) => setReference(e.target.value.toUpperCase())} placeholder="Transaction number from the receipt SMS" autoComplete="off" style={field} />
++                  <p style={{ fontSize: '11px', color: '#999', marginTop: '6px' }}>
++                    Type it exactly as in the payment SMS. The same number can't be used for two tickets.
++                  </p>
++                </>
++              )}
++            </div>
++          )}
++
++          {trip && (
++            <button onClick={submit} disabled={!ready || submitting}
++              style={{ width: '100%', background: ready ? '#C0392B' : '#E0E0E0', color: ready ? 'white' : '#999', border: 'none', borderRadius: '12px', padding: '17px', fontSize: '16px', fontWeight: 700, cursor: ready && !submitting ? 'pointer' : 'not-allowed' }}>
++              {submitting ? 'Selling...' : seats.length > 0 ? `Confirm sale · ${formatPrice(total)}` : 'Choose at least one seat'}
++            </button>
++          )}
++        </>
++      )}
++    </div>
++  )
++}
+diff --git a/apps/web/src/app/operator/bookings/page.tsx b/apps/web/src/app/operator/bookings/page.tsx
+index a36308e..c010c04 100644
+--- a/apps/web/src/app/operator/bookings/page.tsx
++++ b/apps/web/src/app/operator/bookings/page.tsx
+@@ -11,7 +11,11 @@ interface Booking {
+   seatNumbers: string[]
+   totalPrice: number
+   status: string
+-  user: { name: string; phone: string }
++  // Counter (walk-in) sales may have no account: then passengerName/passengerPhone are used
++  user: { name: string; phone: string } | null
++  passengerName?: string | null
++  passengerPhone?: string | null
++  source?: 'ONLINE' | 'COUNTER'
+   pickupPoint?: { name: string; sequence: number; offsetMin: number } | null
+   dropoffPoint?: { name: string } | null
+   schedule: {
+@@ -75,8 +79,9 @@ export default function OperatorBookingsPage() {
+               return (
+                 <tr key={booking.id} style={{ borderTop: '1px solid #F5F5F5' }}>
+                   <td style={{ padding: '14px 20px' }}>
+-                    <p style={{ fontSize: '13px', fontWeight: 600, color: '#1a1a1a' }}>{booking.user.name}</p>
+-                    <p style={{ fontSize: '11px', color: '#bbb' }}>{booking.user.phone}</p>
++                    <p style={{ fontSize: '13px', fontWeight: 600, color: '#1a1a1a' }}>{booking.user?.name ?? booking.passengerName ?? '—'}
++                      {booking.source === 'COUNTER' && <span style={{ marginLeft: '6px', fontSize: '10px', background: '#FFF8E5', color: '#9A6B00', padding: '2px 6px', borderRadius: '10px' }}>Counter</span>}</p>
++                    <p style={{ fontSize: '11px', color: '#bbb' }}>{booking.user?.phone ?? booking.passengerPhone ?? ''}</p>
+                   </td>
+                   <td style={{ padding: '14px 20px', fontSize: '13px', color: '#555' }}>
+                     {booking.schedule.route.fromCity} → {booking.schedule.route.toCity}
+diff --git a/apps/web/src/app/operator/counter-sales/page.tsx b/apps/web/src/app/operator/counter-sales/page.tsx
+new file mode 100644
+index 0000000..3f2f322
+--- /dev/null
++++ b/apps/web/src/app/operator/counter-sales/page.tsx
+@@ -0,0 +1,122 @@
++'use client'
++
++import { useCallback, useEffect, useState } from 'react'
++import { api } from '@/lib/api'
++import CounterSalesList from '@/components/CounterSalesList'
++import { CounterSale, METHOD_LABEL, addisDay, errorOf } from '@/lib/counter'
++import { formatPrice } from '@bus/utils'
++import { Banknote } from 'lucide-react'
++import toast from 'react-hot-toast'
++
++interface Row { tickets: number; seats: number; total: number }
++interface Report {
++  date: string
++  totals: Row
++  byMethod: Record<string, Row>
++  bySeller: ({ staffId: string; name: string; byMethod: Record<string, Row> } & Row)[]
++  voided: Row
++}
++
++const box: React.CSSProperties = { background: 'white', border: '1px solid #F0F0F0', borderRadius: '16px', padding: '20px', marginBottom: '20px' }
++
++export default function CounterSalesPage() {
++  const [date, setDate] = useState(addisDay())
++  const [report, setReport] = useState<Report | null>(null)
++  const [sales, setSales] = useState<CounterSale[]>([])
++  const [loading, setLoading] = useState(true)
++
++  const load = useCallback(async () => {
++    setLoading(true)
++    try {
++      const [r, s] = await Promise.all([
++        api.get('/counter/report', { params: { date } }),
++        api.get('/counter/sales', { params: { date } }),
++      ])
++      setReport(r.data.data)
++      setSales(s.data.data.sales)
++    } catch (err) {
++      toast.error(errorOf(err, 'Failed to load counter sales'))
++    } finally {
++      setLoading(false)
++    }
++  }, [date])
++
++  useEffect(() => { load() }, [load])
++
++  const voidSale = async (sale: CounterSale) => {
++    const reason = window.prompt(`Void ${sale.passengerName}'s ticket? This frees the seats. Give a reason:`)
++    if (!reason) return
++    try {
++      await api.post(`/counter/sales/${sale.id}/void`, { reason })
++      toast.success('Sale voided')
++      load()
++    } catch (err) {
++      toast.error(errorOf(err, 'Could not void this sale'))
++    }
++  }
++
++  const stat = (title: string, row: Row | undefined, color = '#1a1a1a') => (
++    <div style={{ flex: '1 1 150px', background: '#FAFAFA', borderRadius: '12px', padding: '14px' }}>
++      <div style={{ fontSize: '11px', color: '#999', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{title}</div>
++      <div style={{ fontSize: '20px', fontWeight: 700, color, marginTop: '4px' }}>{formatPrice(row?.total ?? 0)}</div>
++      <div style={{ fontSize: '12px', color: '#999' }}>{row?.tickets ?? 0} ticket{row?.tickets === 1 ? '' : 's'} · {row?.seats ?? 0} seat{row?.seats === 1 ? '' : 's'}</div>
++    </div>
++  )
++
++  return (
++    <div>
++      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap', marginBottom: '24px' }}>
++        <div>
++          <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#1a1a1a', display: 'flex', alignItems: 'center', gap: '10px' }}>
++            <Banknote size={22} color="#C0392B" /> Counter sales
++          </h1>
++          <p style={{ fontSize: '13px', color: '#999', marginTop: '4px' }}>
++            Tickets sold at the bus station, by the day they were sold. Counter money goes straight to your own cash, Telebirr and bank accounts.
++          </p>
++        </div>
++        <input type="date" value={date} max={addisDay()} onChange={(e) => setDate(e.target.value || addisDay())}
++          style={{ border: '1px solid #E5E5E5', borderRadius: '10px', padding: '10px 14px', fontSize: '14px' }} />
++      </div>
++
++      {loading && <p style={{ color: '#999' }}>Loading...</p>}
++
++      {!loading && report && (
++        <>
++          <div style={box}>
++            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
++              {stat('Total sold', report.totals, '#C0392B')}
++              {Object.entries(report.byMethod).map(([m, row]) => stat(METHOD_LABEL[m] ?? m, row))}
++              {report.voided.tickets > 0 && stat('Voided (not counted)', report.voided, '#999')}
++            </div>
++          </div>
++
++          <div style={box}>
++            <h2 style={{ fontSize: '15px', fontWeight: 700, marginBottom: '12px' }}>By seller</h2>
++            {report.bySeller.length === 0 && <p style={{ color: '#999', fontSize: '13px' }}>No sales on this day.</p>}
++            {report.bySeller.map((s) => (
++              <div key={s.staffId} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap', padding: '10px 0', borderTop: '1px solid #F5F5F5' }}>
++                <div>
++                  <div style={{ fontSize: '14px', fontWeight: 600 }}>{s.name}</div>
++                  <div style={{ fontSize: '12px', color: '#999' }}>
++                    {Object.entries(s.byMethod).map(([m, r]) => `${METHOD_LABEL[m] ?? m} ${formatPrice(r.total)}`).join(' · ')}
++                  </div>
++                </div>
++                <div style={{ textAlign: 'right' }}>
++                  <div style={{ fontSize: '15px', fontWeight: 700, color: '#C0392B' }}>{formatPrice(s.total)}</div>
++                  <div style={{ fontSize: '12px', color: '#999' }}>{s.tickets} tickets</div>
++                </div>
++              </div>
++            ))}
++          </div>
++        </>
++      )}
++
++      {!loading && (
++        <>
++          <h2 style={{ fontSize: '15px', fontWeight: 700, marginBottom: '12px' }}>All sales</h2>
++          <CounterSalesList sales={sales} onVoid={voidSale} showSeller />
++        </>
++      )}
++    </div>
++  )
++}
+diff --git a/apps/web/src/app/operator/layout.tsx b/apps/web/src/app/operator/layout.tsx
+index 425eb66..57e9ee8 100644
+--- a/apps/web/src/app/operator/layout.tsx
++++ b/apps/web/src/app/operator/layout.tsx
+@@ -5,7 +5,7 @@ import { useRouter, usePathname } from 'next/navigation'
+ import { useAuthStore } from '@/store/auth.store'
+ import { useStaffGuard } from '@/hooks/useStaffGuard'
+ import Link from 'next/link'
+-import { Menu, Bus, Ticket, LayoutDashboard, LogOut, Calendar, MapPin, Users } from 'lucide-react'
++import { Menu, Bus, Ticket, LayoutDashboard, LogOut, Calendar, MapPin, Users, Banknote, Plus } from 'lucide-react'
+ 
+ const navItems = [
+   { href: '/operator', label: 'Dashboard', icon: LayoutDashboard },
+@@ -13,6 +13,8 @@ const navItems = [
+   { href: '/operator/schedules', label: 'Schedules', icon: Calendar },
+   { href: '/operator/pickups', label: 'Pickup Points', icon: MapPin },
+   { href: '/operator/bookings', label: 'Bookings', icon: Ticket },
++  { href: '/counter', label: 'Sell tickets', icon: Plus },
++  { href: '/operator/counter-sales', label: 'Counter sales', icon: Banknote },
+   { href: '/operator/staff', label: 'Staff', icon: Users },
+ ]
+ 
+@@ -71,7 +73,7 @@ export default function OperatorLayout({ children }: { children: React.ReactNode
+ 
+         {/* Nav */}
+         <nav style={{ flex: 1, padding: '16px 12px' }}>
+-          {navItems.filter((item) => item.href !== '/operator/staff' || user?.role !== 'ADMIN').map((item) => {
++          {navItems.filter((item) => (item.href !== '/operator/staff' && item.href !== '/operator/counter-sales' && item.href !== '/counter') || user?.role !== 'ADMIN').map((item) => {
+             const Icon = item.icon
+             const isActive = pathname === item.href
+             return (
+diff --git a/apps/web/src/app/ticket/[code]/page.tsx b/apps/web/src/app/ticket/[code]/page.tsx
+new file mode 100644
+index 0000000..7a75196
+--- /dev/null
++++ b/apps/web/src/app/ticket/[code]/page.tsx
+@@ -0,0 +1,104 @@
++'use client'
++
++import { useEffect, useState } from 'react'
++import { useParams, useSearchParams } from 'next/navigation'
++import { Suspense } from 'react'
++import { api } from '@/lib/api'
++import { formatDate, formatTime, formatPrice } from '@bus/utils'
++import { Printer } from 'lucide-react'
++
++interface Ticket {
++  code: string
++  status: 'VALID' | 'VOIDED'
++  passengerName: string | null
++  seatNumbers: string[]
++  totalPrice: number
++  companyName: string
++  plateNumber: string
++  busType: string
++  fromCity: string
++  toCity: string
++  departureTime: string
++  arrivalTime: string
++  pickupPoint: { name: string; offsetMin: number } | null
++  dropoffPoint: { name: string } | null
++  qrCode: string
++}
++
++function TicketView() {
++  const { code } = useParams<{ code: string }>()
++  const search = useSearchParams()
++  const [ticket, setTicket] = useState<Ticket | null>(null)
++  const [error, setError] = useState('')
++
++  useEffect(() => {
++    api.get(`/tickets/${code}`)
++      .then((res) => setTicket(res.data.data.ticket))
++      .catch(() => setError('Ticket not found. Please check the code.'))
++  }, [code])
++
++  // Opened from the counter's Print button
++  useEffect(() => {
++    if (ticket && search.get('print') === '1') setTimeout(() => window.print(), 400)
++  }, [ticket, search])
++
++  if (error) return <p style={{ textAlign: 'center', padding: '80px 20px', color: '#999' }}>{error}</p>
++  if (!ticket) return <p style={{ textAlign: 'center', padding: '80px 20px', color: '#999' }}>Loading...</p>
++
++  const valid = ticket.status === 'VALID'
++  const row = (k: string, v: React.ReactNode) => (
++    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', padding: '10px 0', borderTop: '1px solid #F2F2F2', fontSize: '14px' }}>
++      <span style={{ color: '#999' }}>{k}</span>
++      <span style={{ fontWeight: 600, color: '#1a1a1a', textAlign: 'right' }}>{v}</span>
++    </div>
++  )
++
++  return (
++    <div style={{ maxWidth: '420px', margin: '0 auto', padding: '24px 16px' }}>
++      <div style={{ background: 'white', borderRadius: '20px', overflow: 'hidden', boxShadow: '0 4px 24px rgba(0,0,0,0.08)' }}>
++        <div style={{ background: valid ? '#1A0A0A' : '#7F1D1D', padding: '18px 20px', color: 'white' }}>
++          <div style={{ fontSize: '12px', color: '#D4A017' }}>{ticket.companyName}</div>
++          <div style={{ fontSize: '20px', fontWeight: 700, marginTop: '2px' }}>{ticket.fromCity} → {ticket.toCity}</div>
++          <div style={{ fontSize: '13px', opacity: 0.7, marginTop: '4px' }}>
++            {formatDate(ticket.departureTime)} · {formatTime(ticket.departureTime)}
++          </div>
++        </div>
++        {!valid && (
++          <div style={{ background: '#FEE2E2', color: '#991B1B', padding: '12px 20px', fontSize: '14px', fontWeight: 700, textAlign: 'center' }}>
++            THIS TICKET HAS BEEN CANCELLED. DO NOT ACCEPT IT.
++          </div>
++        )}
++        <div style={{ padding: '20px', textAlign: 'center' }}>
++          {/* eslint-disable-next-line @next/next/no-img-element */}
++          <img src={ticket.qrCode} alt="Ticket QR code" width={190} height={190} style={{ margin: '0 auto', opacity: valid ? 1 : 0.25 }} />
++          <div style={{ fontSize: '26px', fontWeight: 800, letterSpacing: '4px', margin: '6px 0 14px' }}>{ticket.code}</div>
++          <div style={{ textAlign: 'left' }}>
++            {row('Passenger', ticket.passengerName ?? '—')}
++            {row(ticket.seatNumbers.length > 1 ? 'Seats' : 'Seat', ticket.seatNumbers.join(', '))}
++            {ticket.pickupPoint && row('Pickup', `${ticket.pickupPoint.name} (~${formatTime(new Date(new Date(ticket.departureTime).getTime() + ticket.pickupPoint.offsetMin * 60000).toISOString())})`)}
++            {ticket.dropoffPoint && row('Drop-off', ticket.dropoffPoint.name)}
++            {row('Bus', `${ticket.plateNumber} · ${ticket.busType}`)}
++            {row('Arrives', formatTime(ticket.arrivalTime))}
++            {row('Paid', formatPrice(ticket.totalPrice))}
++          </div>
++          <p style={{ fontSize: '12px', color: '#999', marginTop: '14px' }}>Please be at your pickup point 10–15 minutes early.</p>
++        </div>
++      </div>
++      <button className="no-print" onClick={() => window.print()}
++        style={{ width: '100%', marginTop: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: 'white', border: '1px solid #E5E5E5', borderRadius: '12px', padding: '14px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>
++        <Printer size={16} /> Print ticket
++      </button>
++      <style>{`@media print { .no-print { display: none !important; } body { background: white !important; } }`}</style>
++    </div>
++  )
++}
++
++export default function TicketPage() {
++  return (
++    <div style={{ minHeight: '100vh', background: '#F8F8F8' }}>
++      <Suspense fallback={<p style={{ textAlign: 'center', padding: '80px 20px', color: '#999' }}>Loading...</p>}>
++        <TicketView />
++      </Suspense>
++    </div>
++  )
++}
+diff --git a/apps/web/src/components/CounterSalesList.tsx b/apps/web/src/components/CounterSalesList.tsx
+new file mode 100644
+index 0000000..b78892d
+--- /dev/null
++++ b/apps/web/src/components/CounterSalesList.tsx
+@@ -0,0 +1,73 @@
++'use client'
++
++import { formatDate, formatTime, formatPrice } from '@bus/utils'
++import { Ban } from 'lucide-react'
++import { CounterSale, METHOD_LABEL } from '@/lib/counter'
++
++/** A list of counter sales, with a Void button where the person is allowed to void. */
++export default function CounterSalesList({
++  sales, onVoid, showSeller = false,
++}: {
++  sales: CounterSale[]
++  onVoid: (sale: CounterSale) => void
++  showSeller?: boolean
++}) {
++  if (sales.length === 0) {
++    return <p style={{ color: '#999', fontSize: '14px', padding: '24px 0', textAlign: 'center' }}>No sales on this day.</p>
++  }
++  return (
++    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
++      {sales.map((s) => {
++        const voided = s.status === 'CANCELLED'
++        return (
++          <div key={s.id} style={{ background: 'white', border: '1px solid #EEEEEE', borderRadius: '14px', padding: '14px 16px', opacity: voided ? 0.6 : 1 }}>
++            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start' }}>
++              <div style={{ minWidth: 0 }}>
++                <div style={{ fontSize: '14px', fontWeight: 700, color: '#1a1a1a' }}>
++                  {s.passengerName} <span style={{ fontWeight: 400, color: '#999', fontSize: '12px' }}>{s.passengerPhone}</span>
++                </div>
++                <div style={{ fontSize: '12px', color: '#666', marginTop: '3px' }}>
++                  {s.schedule.route.fromCity} → {s.schedule.route.toCity} · {formatDate(s.schedule.departureTime)} {formatTime(s.schedule.departureTime)}
++                </div>
++                <div style={{ fontSize: '12px', color: '#666', marginTop: '2px' }}>
++                  Seat{s.seatNumbers.length > 1 ? 's' : ''} {s.seatNumbers.join(', ')}
++                  {s.pickupPoint ? ` · Pickup: ${s.pickupPoint.name}` : ''}
++                </div>
++                <div style={{ fontSize: '11px', color: '#999', marginTop: '4px' }}>
++                  {formatTime(s.createdAt)} · {METHOD_LABEL[s.payment?.method ?? ''] ?? '—'}
++                  {s.payment?.reference ? ` · ${s.payment.reference}` : s.payment?.method !== 'CASH' && voided ? ' · receipt released' : ''}
++                  {showSeller && s.soldByStaff ? ` · sold by ${s.soldByStaff.user.name}` : ''}
++                  {s.ticketCode ? ` · ${s.ticketCode}` : ''}
++                </div>
++                {voided && (
++                  <div style={{ fontSize: '12px', color: '#C0392B', marginTop: '6px' }}>
++                    Voided{s.voidedByStaff ? ` by ${s.voidedByStaff.user.name}` : ''}{s.voidReason ? `: ${s.voidReason}` : ''}
++                  </div>
++                )}
++              </div>
++              <div style={{ textAlign: 'right', flexShrink: 0 }}>
++                <div style={{ fontSize: '15px', fontWeight: 700, color: voided ? '#999' : '#C0392B', textDecoration: voided ? 'line-through' : 'none' }}>
++                  {formatPrice(s.totalPrice)}
++                </div>
++                <div style={{ display: 'flex', gap: '6px', marginTop: '8px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
++                  {s.ticketCode && !voided && (
++                    <a href={`/ticket/${s.ticketCode}`} target="_blank" rel="noreferrer"
++                       style={{ fontSize: '12px', fontWeight: 600, color: '#555', background: '#F5F5F5', padding: '6px 10px', borderRadius: '8px', textDecoration: 'none' }}>
++                      Ticket
++                    </a>
++                  )}
++                  {s.canVoid && (
++                    <button onClick={() => onVoid(s)}
++                      style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '12px', fontWeight: 600, color: '#C0392B', background: '#FFF5F5', border: 'none', padding: '6px 10px', borderRadius: '8px', cursor: 'pointer' }}>
++                      <Ban size={12} /> Void
++                    </button>
++                  )}
++                </div>
++              </div>
++            </div>
++          </div>
++        )
++      })}
++    </div>
++  )
++}
+diff --git a/apps/web/src/lib/counter.ts b/apps/web/src/lib/counter.ts
+new file mode 100644
+index 0000000..df727e6
+--- /dev/null
++++ b/apps/web/src/lib/counter.ts
+@@ -0,0 +1,37 @@
++// Shared by the counter screens (seller, manager report, public ticket).
++
++export const METHOD_LABEL: Record<string, string> = {
++  CASH: 'Cash',
++  TELEBIRR: 'Telebirr',
++  CBE_BIRR: 'CBE Birr',
++  BANK_TRANSFER: 'Bank transfer',
++  CARD: 'Card',
++}
++
++/** The Addis Ababa calendar day (YYYY-MM-DD) of a moment, or of now. */
++export const addisDay = (when: Date | string = new Date()) =>
++  new Date(when).toLocaleDateString('en-CA', { timeZone: 'Africa/Addis_Ababa' })
++
++export const errorOf = (err: unknown, fallback: string) =>
++  (err as { response?: { data?: { error?: string } } })?.response?.data?.error || fallback
++
++export interface CounterSale {
++  id: string
++  status: string
++  seatNumbers: string[]
++  totalPrice: number
++  passengerName: string | null
++  passengerPhone: string | null
++  ticketCode: string | null
++  createdAt: string
++  voidedAt: string | null
++  voidReason: string | null
++  canVoid: boolean
++  qrCode?: string
++  schedule: { departureTime: string; arrivalTime: string; route: { fromCity: string; toCity: string }; bus: { plateNumber: string } }
++  pickupPoint: { name: string; offsetMin: number } | null
++  dropoffPoint: { name: string } | null
++  payment: { method: string; reference: string | null; amount: number } | null
++  soldByStaff: { id: string; user: { name: string } } | null
++  voidedByStaff: { user: { name: string } } | null
++}

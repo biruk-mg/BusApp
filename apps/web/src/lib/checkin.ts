@@ -5,6 +5,9 @@ export interface CheckinTrip {
   departureTime: string
   arrivalTime: string
   status: 'OPEN' | 'CLOSED'
+  // Live tracking: set when the checker taps Start trip / End trip
+  startedAt: string | null
+  endedAt: string | null
   route: { fromCity: string; toCity: string }
   bus: { plateNumber: string; busType: string; totalSeats: number }
   soldSeats: number
@@ -38,6 +41,8 @@ export interface TripDetail {
   id: string
   departureTime: string
   status: 'OPEN' | 'CLOSED'
+  startedAt: string | null
+  endedAt: string | null
   route: { fromCity: string; toCity: string }
   bus: { plateNumber: string; busType: string; totalSeats: number }
 }

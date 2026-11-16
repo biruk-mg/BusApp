@@ -11,8 +11,10 @@ import {
   seatsOf, boardedSeatsOf, isRejectedByServer,
 } from '@/lib/checkin'
 import { useAuthStore } from '@/store/auth.store'
+import { askForLocation, useLocationSender, useNow } from '@/hooks/useLocationSender'
+import { TripPhase, accuracyText, agoText, secondsAgo, sendingState, tripPhase } from '@/lib/tripTracking'
 import { formatTime, formatDate } from '@bus/utils'
-import { ArrowLeft, ChevronLeft, ChevronRight, Check, Phone, Search, RefreshCw, TriangleAlert, ScanLine } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, Check, Phone, Search, RefreshCw, TriangleAlert, ScanLine, Radio } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 const card: React.CSSProperties = {
@@ -100,7 +102,10 @@ function Boarding() {
       {trips.map((t) => (
         <button key={t.id} onClick={() => setTripId(t.id)} style={{ ...card, display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
-            <div style={{ fontSize: '24px', fontWeight: 700, color: '#1a1a1a' }}>{formatTime(t.departureTime)}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <div style={{ fontSize: '24px', fontWeight: 700, color: '#1a1a1a' }}>{formatTime(t.departureTime)}</div>
+              {tripPhase(t) === 'LIVE' && <LiveBadge />}
+            </div>
             <div style={{ textAlign: 'right' }}>
               <div style={{ fontSize: '16px', fontWeight: 700, color: t.boardedSeats === t.soldSeats && t.soldSeats > 0 ? '#2E8B57' : '#1a1a1a' }}>
                 {t.boardedSeats} / {t.soldSeats}
@@ -164,6 +169,15 @@ function PassengerList({ tripId, onBack, onOpenOtherTrip }: {
     const timer = setInterval(() => { if (document.visibilityState === 'visible') load(true) }, 30000)
     return () => clearInterval(timer)
   }, [load])
+
+  // Live tracking: while the trip is live this phone sends its position
+  const phase: TripPhase = trip ? tripPhase(trip) : 'NOT_STARTED'
+  const sender = useLocationSender(tripId, phase === 'LIVE', () => load(true))
+  const onTripChanged = useCallback(
+    (t: { startedAt: string | null; endedAt: string | null }) =>
+      setTrip((cur) => (cur ? { ...cur, startedAt: t.startedAt, endedAt: t.endedAt } : cur)),
+    []
+  )
 
   const change = (id: string, patch: Partial<Passenger>) =>
     setPassengers((list) => list.map((p) => (p.id === id ? { ...p, ...patch } : p)))
@@ -271,6 +285,7 @@ function PassengerList({ tripId, onBack, onOpenOtherTrip }: {
               <div style={{ fontSize: '22px', fontWeight: 700, color: 'white' }}>{formatTime(trip.departureTime)}</div>
               <div style={{ fontSize: '14px', color: 'rgba(255,255,255,0.7)', marginTop: '2px' }}>{trip.route.fromCity} → {trip.route.toCity}</div>
               <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.45)', marginTop: '2px' }}>{trip.bus.plateNumber}</div>
+              <TripStatusChip phase={phase} />
             </div>
             <div style={{ textAlign: 'right' }}>
               <div style={{ fontSize: '26px', fontWeight: 700, color: boarded === sold && sold > 0 ? '#5ED68A' : '#D4A017' }}>{boarded} / {sold}</div>
@@ -280,8 +295,11 @@ function PassengerList({ tripId, onBack, onOpenOtherTrip }: {
           <div style={{ height: '6px', background: 'rgba(255,255,255,0.15)', borderRadius: '3px', marginTop: '12px' }}>
             <div style={{ height: '100%', width: `${sold ? (boarded / sold) * 100 : 0}%`, background: '#5ED68A', borderRadius: '3px', transition: 'width .2s' }} />
           </div>
+          <TripControls trip={trip} phase={phase} onChanged={onTripChanged} onRefresh={() => load(true)} />
         </div>
       )}
+
+      {trip && phase === 'LIVE' && <SendingStatus sender={sender} />}
 
       {unsavedCount > 0 && (
         <div style={{ ...card, background: '#FFF8E6', border: '1px solid #F0D58C', display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -357,6 +375,125 @@ function PassengerList({ tripId, onBack, onOpenOtherTrip }: {
           ))}
         </div>
       ))}
+    </div>
+  )
+}
+
+function LiveBadge() {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: '#E8F7EE', color: '#2E8B57', borderRadius: '999px', padding: '3px 9px', fontSize: '11px', fontWeight: 700, letterSpacing: '0.5px' }}>
+      <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#2E8B57' }} /> LIVE
+    </span>
+  )
+}
+
+const CHIPS: Record<TripPhase, { label: string; bg: string; color: string }> = {
+  NOT_STARTED: { label: 'Not started', bg: 'rgba(255,255,255,0.12)', color: 'rgba(255,255,255,0.7)' },
+  LIVE: { label: 'Live', bg: '#2E8B57', color: 'white' },
+  ENDED: { label: 'Ended', bg: 'rgba(255,255,255,0.12)', color: 'rgba(255,255,255,0.7)' },
+}
+
+function TripStatusChip({ phase }: { phase: TripPhase }) {
+  const c = CHIPS[phase]
+  return (
+    <span style={{ display: 'inline-block', marginTop: '8px', background: c.bg, color: c.color, borderRadius: '999px', padding: '3px 10px', fontSize: '12px', fontWeight: 700 }}>
+      {c.label}
+    </span>
+  )
+}
+
+/** Start trip / End trip. End asks a second time so it cannot be pressed by accident. */
+function TripControls({ trip, phase, onChanged, onRefresh }: {
+  trip: TripDetail
+  phase: TripPhase
+  onChanged: (t: { startedAt: string | null; endedAt: string | null }) => void
+  onRefresh: () => void
+}) {
+  const [working, setWorking] = useState(false)
+  const [confirmingEnd, setConfirmingEnd] = useState(false)
+
+  const call = async (action: 'start' | 'end') => {
+    setWorking(true)
+    try {
+      // The phone asks for location permission now, when the checker taps Start
+      if (action === 'start') await askForLocation()
+      const res = await api.post(`/checkin/trips/${trip.id}/${action}`)
+      onChanged(res.data.data.trip)
+      setConfirmingEnd(false)
+    } catch (err) {
+      toast.error(errorOf(err, action === 'start' ? 'Could not start the trip. Check your signal and try again.' : 'Could not end the trip. Check your signal and try again.'))
+      // "Already started" or "already ended": show what the server says now
+      if (isRejectedByServer(err)) { setConfirmingEnd(false); onRefresh() }
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const base: React.CSSProperties = { width: '100%', border: 'none', borderRadius: '12px', padding: '14px', fontSize: '16px', fontWeight: 700, cursor: working ? 'wait' : 'pointer', opacity: working ? 0.7 : 1 }
+
+  if (phase === 'ENDED') {
+    return <div style={{ marginTop: '14px', fontSize: '14px', color: 'rgba(255,255,255,0.7)' }}>Trip ended at {trip.endedAt ? formatTime(trip.endedAt) : ''}</div>
+  }
+
+  if (phase === 'NOT_STARTED') {
+    return (
+      <button onClick={() => call('start')} disabled={working} style={{ ...base, marginTop: '14px', background: '#2E8B57', color: 'white' }}>
+        {working ? 'Starting...' : 'Start trip'}
+      </button>
+    )
+  }
+
+  if (!confirmingEnd) {
+    return (
+      <button onClick={() => setConfirmingEnd(true)} style={{ ...base, marginTop: '14px', background: 'rgba(255,255,255,0.12)', color: 'white', cursor: 'pointer', opacity: 1 }}>
+        End trip
+      </button>
+    )
+  }
+  return (
+    <div style={{ marginTop: '14px' }}>
+      <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.8)', marginBottom: '8px' }}>End this trip? Passengers will stop seeing the bus.</div>
+      <div style={{ display: 'flex', gap: '8px' }}>
+        <button onClick={() => call('end')} disabled={working} style={{ ...base, flex: 1, background: '#C0392B', color: 'white' }}>
+          {working ? 'Ending...' : 'Yes, end trip'}
+        </button>
+        <button onClick={() => setConfirmingEnd(false)} disabled={working} style={{ ...base, flex: 1, background: 'rgba(255,255,255,0.12)', color: 'white', cursor: 'pointer', opacity: 1 }}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/** What this phone is doing for the passengers: sending, waiting for GPS, or blocked. */
+function SendingStatus({ sender }: { sender: ReturnType<typeof useLocationSender> }) {
+  const now = useNow()
+  const state = sendingState({ permission: sender.permission, lastSentAt: sender.lastSent?.at ?? null, since: sender.since, now })
+  const warn = state === 'BLOCKED' || state === 'UNSUPPORTED' || state === 'STALE'
+
+  let text: string
+  if (state === 'BLOCKED') text = 'Location is blocked, passengers cannot see the bus. Allow location for this site in the browser settings, then reload this page.'
+  else if (state === 'UNSUPPORTED') text = 'This browser cannot share its location, so passengers cannot see the bus. Open the page in Chrome over a secure (https) address.'
+  else if (state === 'WAITING') text = 'Looking for a GPS position...'
+  else {
+    const last = sender.lastSent ? agoText(secondsAgo(sender.lastSent.at, now)) : ''
+    const acc = accuracyText(sender.lastSent?.accuracy ?? null)
+    text = state === 'STALE'
+      ? `No location sent for ${sender.lastSent ? last : 'a while'}. Check the GPS and the signal. Passengers see the last position as old.`
+      : `Sending location · last sent ${last} ago${acc ? ` · GPS accuracy ${acc}` : ''}`
+  }
+
+  return (
+    <div style={{ ...card, background: warn ? '#FEF2F2' : '#F0FFF4', border: `1px solid ${warn ? '#F3B8B2' : '#BFE5CC'}` }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+        {warn ? <TriangleAlert size={18} color="#C0392B" style={{ flexShrink: 0, marginTop: '1px' }} /> : <Radio size={18} color="#2E8B57" style={{ flexShrink: 0, marginTop: '1px' }} />}
+        <div style={{ fontSize: '14px', color: warn ? '#C0392B' : '#2E8B57', fontWeight: 600, lineHeight: 1.4 }}>{text}</div>
+      </div>
+      {sender.problem && <div style={{ fontSize: '13px', color: '#C0392B', marginTop: '8px' }}>{sender.problem}</div>}
+      <div style={{ fontSize: '12px', color: '#777', marginTop: '8px' }}>
+        Keep this screen on and plug in the phone.
+        {sender.wakeLock !== 'on' && ' The phone could not be told to keep the screen awake, so turn off its screen lock for now.'}
+      </div>
     </div>
   )
 }
