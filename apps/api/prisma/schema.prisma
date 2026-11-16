@@ -101,10 +101,30 @@ model Schedule {
   bookings      Booking[]
   createdAt     DateTime  @default(now())
 
+  // Set by the ticket checker's Start trip / End trip buttons. Live tracking only runs
+  // between the two. They also give real start times and durations for later reports.
+  startedAt     DateTime?
+  endedAt       DateTime?
+  position      TripPosition?
+
   // A recurring schedule can never create the same departure twice.
   // Manual trips have no template (NULL), so they are not affected.
   @@unique([templateId, departureTime])
   @@index([departureTime])
+}
+
+// Where the bus is right now: ONE row per trip, always the newest position the checker's
+// phone sent. Deleted when the trip ends. (No history is kept yet.)
+model TripPosition {
+  scheduleId String   @id
+  schedule   Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  lat        Float
+  lng        Float
+  accuracy   Float?   // metres
+  speed      Float?   // metres per second
+  heading    Float?   // degrees, 0-360
+  recordedAt DateTime // when the phone took the position (the phone's clock, checked on arrival)
+  updatedAt  DateTime @updatedAt
 }
 
 enum ScheduleStatus {
