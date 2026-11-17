@@ -2,18 +2,21 @@
 
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
-import { MapPin, ArrowUp, ArrowDown, Trash2, Plus, Pencil, Check, X } from 'lucide-react'
+import { MapPin, ArrowUp, ArrowDown, Trash2, Plus, Pencil, Check, X, Crosshair, ExternalLink } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 type Kind = 'PICKUP' | 'DROPOFF' | 'BOTH'
 
 interface RouteItem { id: string; fromCity: string; toCity: string }
-interface Point { id: string; routeId: string; name: string; kind: Kind; sequence: number; offsetMin: number }
+interface Point { id: string; routeId: string; name: string; kind: Kind; sequence: number; offsetMin: number; lat: number | null; lng: number | null }
 
 const KIND_LABEL: Record<Kind, string> = { PICKUP: 'Pickup', DROPOFF: 'Drop-off', BOTH: 'Pickup & drop-off' }
 
 const errorText = (err: unknown, fallback: string) =>
   (err as { response?: { data?: { error?: string } } }).response?.data?.error || fallback
+
+const mapsUrl = (lat: number, lng: number) => `https://www.google.com/maps?q=${lat},${lng}`
+const coordsText = (p: { lat: number | null; lng: number | null }) => (p.lat !== null && p.lng !== null ? `${p.lat}, ${p.lng}` : '')
 
 const inputStyle = { padding: '10px 12px', borderRadius: '10px', border: '1px solid #E5E5E5', fontSize: '14px', background: 'white', minWidth: 0 }
 const iconBtn = { background: 'white', border: '1px solid #E5E5E5', borderRadius: '8px', padding: '7px', cursor: 'pointer', display: 'flex', color: '#666' }
@@ -23,9 +26,9 @@ export default function OperatorPickupsPage() {
   const [points, setPoints] = useState<Point[]>([])
   const [routeId, setRouteId] = useState('')
   const [loading, setLoading] = useState(true)
-  const [form, setForm] = useState({ name: '', kind: 'PICKUP' as Kind, offsetMin: '0' })
+  const [form, setForm] = useState({ name: '', kind: 'PICKUP' as Kind, offsetMin: '0', location: '' })
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [draft, setDraft] = useState({ name: '', kind: 'PICKUP' as Kind, offsetMin: '0' })
+  const [draft, setDraft] = useState({ name: '', kind: 'PICKUP' as Kind, offsetMin: '0', location: '' })
 
   const load = async () => {
     try {
@@ -56,8 +59,9 @@ export default function OperatorPickupsPage() {
         kind: form.kind,
         sequence: current.length ? Math.max(...current.map((p) => p.sequence)) + 1 : 0,
         offsetMin: Math.max(0, Number(form.offsetMin) || 0),
+        location: form.location.trim() || null,
       })
-      setForm({ name: '', kind: form.kind, offsetMin: '0' })
+      setForm({ name: '', kind: form.kind, offsetMin: '0', location: '' })
       toast.success('Added')
       await load()
     } catch (err) { toast.error(errorText(err, 'Failed to add')) }
@@ -79,7 +83,7 @@ export default function OperatorPickupsPage() {
 
   const startEdit = (p: Point) => {
     setEditingId(p.id)
-    setDraft({ name: p.name, kind: p.kind, offsetMin: String(p.offsetMin) })
+    setDraft({ name: p.name, kind: p.kind, offsetMin: String(p.offsetMin), location: coordsText(p) })
   }
 
   const saveEdit = async () => {
@@ -89,11 +93,22 @@ export default function OperatorPickupsPage() {
         name: draft.name.trim(),
         kind: draft.kind,
         offsetMin: Math.max(0, Number(draft.offsetMin) || 0),
+        location: draft.location.trim() || null, // empty removes the map position
       })
       setEditingId(null)
       toast.success('Saved')
       await load()
     } catch (err) { toast.error(errorText(err, 'Failed to save')) }
+  }
+
+  // Standing at the stop: let the phone fill in the position
+  const useMyLocation = (apply: (text: string) => void) => {
+    if (!navigator.geolocation) { toast.error('This browser cannot read your location'); return }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => apply(`${pos.coords.latitude.toFixed(6)}, ${pos.coords.longitude.toFixed(6)}`),
+      () => toast.error('Could not get your location. Allow location access, or paste the coordinates instead.'),
+      { enableHighAccuracy: true, timeout: 15000 }
+    )
   }
 
   const remove = async (p: Point) => {
@@ -152,6 +167,17 @@ export default function OperatorPickupsPage() {
                     <input type="number" min={0} value={draft.offsetMin} onChange={(e) => setDraft({ ...draft, offsetMin: e.target.value })} style={{ ...inputStyle, width: '90px' }} />
                     <button onClick={saveEdit} aria-label="Save" style={{ ...iconBtn, color: '#2E8B57' }}><Check size={16} /></button>
                     <button onClick={() => setEditingId(null)} aria-label="Cancel" style={iconBtn}><X size={16} /></button>
+                    <div style={{ flex: '1 1 100%', display: 'flex', gap: '8px', alignItems: 'center', paddingLeft: '40px' }}>
+                      <input
+                        value={draft.location}
+                        onChange={(e) => setDraft({ ...draft, location: e.target.value })}
+                        placeholder="Map position: 9.0301, 38.7400 or a Google Maps link (empty = none)"
+                        style={{ ...inputStyle, flex: 1 }}
+                      />
+                      <button type="button" onClick={() => useMyLocation((t) => setDraft((d) => ({ ...d, location: t })))} aria-label="Use my current location" title="Use my current location" style={iconBtn}>
+                        <Crosshair size={16} />
+                      </button>
+                    </div>
                   </>
                 ) : (
                   <>
@@ -159,6 +185,15 @@ export default function OperatorPickupsPage() {
                       <div style={{ fontSize: '14px', fontWeight: 600, color: '#1a1a1a' }}>{p.name}</div>
                       <div style={{ fontSize: '12px', color: '#999', marginTop: '2px' }}>
                         {KIND_LABEL[p.kind]} · {p.offsetMin === 0 ? 'at departure' : `+${p.offsetMin} min after departure`}
+                      </div>
+                      <div style={{ fontSize: '12px', marginTop: '3px' }}>
+                        {p.lat !== null && p.lng !== null ? (
+                          <a href={mapsUrl(p.lat, p.lng)} target="_blank" rel="noopener noreferrer" style={{ color: '#2E8B57', display: 'inline-flex', alignItems: 'center', gap: '4px', textDecoration: 'none' }}>
+                            <MapPin size={12} /> On the map ({p.lat}, {p.lng}) <ExternalLink size={11} />
+                          </a>
+                        ) : (
+                          <span style={{ color: '#B7791F' }}>No map position yet: passengers will not see minutes to this point</span>
+                        )}
                       </div>
                     </div>
                     <button onClick={() => move(i, -1)} disabled={i === 0} aria-label="Move up" style={{ ...iconBtn, opacity: i === 0 ? 0.35 : 1 }}><ArrowUp size={16} /></button>
@@ -187,6 +222,25 @@ export default function OperatorPickupsPage() {
               <div>
                 <label style={{ fontSize: '12px', color: '#999', display: 'block', marginBottom: '6px' }}>Minutes after departure</label>
                 <input type="number" min={0} value={form.offsetMin} onChange={(e) => setForm({ ...form, offsetMin: e.target.value })} style={{ ...inputStyle, width: '120px' }} />
+              </div>
+              <div style={{ flex: '1 1 100%' }}>
+                <label style={{ fontSize: '12px', color: '#999', display: 'block', marginBottom: '6px' }}>Map position (optional, but needed for arrival minutes)</label>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <input
+                    value={form.location}
+                    onChange={(e) => setForm({ ...form, location: e.target.value })}
+                    placeholder="9.0301, 38.7400 or a full Google Maps link"
+                    style={{ ...inputStyle, flex: 1 }}
+                  />
+                  <button type="button" onClick={() => useMyLocation((t) => setForm((f) => ({ ...f, location: t })))} title="Use my current location" style={{ ...iconBtn, padding: '10px 12px', gap: '6px', alignItems: 'center', fontSize: '13px' }}>
+                    <Crosshair size={16} /> I am here
+                  </button>
+                </div>
+                <p style={{ fontSize: '12px', color: '#999', marginTop: '8px', lineHeight: 1.5 }}>
+                  <a href="https://www.google.com/maps" target="_blank" rel="noopener noreferrer" style={{ color: '#C0392B' }}>Open Google Maps</a>, find the stop, then
+                  on a computer right-click it and click the two numbers; on a phone press and hold the spot and copy the numbers shown. Paste them here.
+                  Short links (maps.app.goo.gl) cannot be read; open the link first, then copy the numbers or the long address.
+                </p>
               </div>
               <button onClick={add} style={{ background: '#C0392B', color: 'white', border: 'none', borderRadius: '10px', padding: '11px 18px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <Plus size={16} /> Add

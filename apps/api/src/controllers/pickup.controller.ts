@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { prisma } from '../lib/prisma'
 import { AuthRequest } from '../middleware/auth'
 import { companyOf } from '../middleware/staff'
+import { parseLocationInput } from '../lib/coords'
 
 const createSchema = z.object({
   routeId: z.string(),
@@ -10,6 +11,8 @@ const createSchema = z.object({
   kind: z.enum(['PICKUP', 'DROPOFF', 'BOTH']).default('PICKUP'),
   sequence: z.number().int().min(0).default(0),
   offsetMin: z.number().int().min(0, 'Minutes cannot be negative').max(600).default(0),
+  // Pasted coordinates or Google Maps link. Empty or missing = no map position.
+  location: z.string().max(2000).nullish(),
 })
 // For edits, a field that is not sent must stay as it is (no defaults here)
 const updateSchema = z.object({
@@ -17,7 +20,17 @@ const updateSchema = z.object({
   kind: z.enum(['PICKUP', 'DROPOFF', 'BOTH']).optional(),
   sequence: z.number().int().min(0).optional(),
   offsetMin: z.number().int().min(0, 'Minutes cannot be negative').max(600).optional(),
+  // A string sets the position, empty text or null clears it, a missing key leaves it as it is
+  location: z.string().max(2000).nullish(),
 })
+
+type Place = { lat: number | null; lng: number | null }
+/** The map position to store for a pasted location, or the error to show the manager. */
+function placeFrom(location: string | null | undefined): { ok: true; place: Place } | { ok: false; error: string } {
+  if (location === null || location === undefined || location.trim() === '') return { ok: true, place: { lat: null, lng: null } }
+  const result = parseLocationInput(location)
+  return result.ok ? { ok: true, place: { lat: result.lat, lng: result.lng } } : result
+}
 
 // The company comes from the staff middleware (managers only), never from the request
 function requireOperator(req: AuthRequest, res: Response) {
@@ -63,8 +76,15 @@ export const createPickupPoint = async (req: AuthRequest, res: Response): Promis
       return
     }
 
+    const { location, ...fields } = parsed.data
+    const place = placeFrom(location)
+    if (!place.ok) {
+      res.status(400).json({ success: false, error: place.error })
+      return
+    }
+
     const pickupPoint = await prisma.pickupPoint.create({
-      data: { ...parsed.data, operatorId: operator.id },
+      data: { ...fields, ...place.place, operatorId: operator.id },
     })
     res.status(201).json({ success: true, data: { pickupPoint } })
   } catch (error) {
@@ -96,7 +116,18 @@ export const updatePickupPoint = async (req: AuthRequest, res: Response): Promis
       return
     }
 
-    const pickupPoint = await prisma.pickupPoint.update({ where: { id }, data: parsed.data })
+    const { location, ...fields } = parsed.data
+    let place: Place | Record<string, never> = {}
+    if (location !== undefined) {
+      const result = placeFrom(location)
+      if (!result.ok) {
+        res.status(400).json({ success: false, error: result.error })
+        return
+      }
+      place = result.place
+    }
+
+    const pickupPoint = await prisma.pickupPoint.update({ where: { id }, data: { ...fields, ...place } })
     res.json({ success: true, data: { pickupPoint } })
   } catch (error) {
     if (isUniqueError(error)) {

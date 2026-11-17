@@ -329,6 +329,10 @@ model PickupPoint {
   kind       PickupKind @default(PICKUP)
   sequence   Int        @default(0)
   offsetMin  Int        @default(0)
+  // Map position of the point, pasted by the manager from Google Maps. Both set or both empty.
+  // Needed for "minutes until the bus reaches your pickup"; a point without them still works.
+  lat        Float?
+  lng        Float?
   createdAt  DateTime   @default(now())
 
   pickupBookings  Booking[] @relation("BookingPickup")
