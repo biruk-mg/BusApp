@@ -8,3 +8,8 @@ dist
 *.sql
 .env.*
 !.env.example
+
+# not deployed yet
+apps/mobile/
+.claude/
+patch-*.patch
