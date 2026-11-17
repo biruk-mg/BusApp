@@ -105,3 +105,65 @@ export function sendingState(input: {
   if (stale) return 'STALE'
   return input.lastSentAt === null ? 'WAITING' : 'SENDING'
 }
+
+// ---------------------------------------------------------------------------------------------
+// Passenger side: what the passenger is told about the bus. GET /bookings/:id/tracking
+// ---------------------------------------------------------------------------------------------
+
+export interface PassengerTracking {
+  state: TripPhase
+  startedAt: string | null
+  endedAt: string | null
+  position: null | {
+    lat: number
+    lng: number
+    accuracy: number | null
+    speed: number | null // metres per second
+    heading: number | null
+    recordedAt: string
+    ageSeconds: number // worked out by the server when it answered
+  }
+}
+
+export type PassengerTone = 'wait' | 'live' | 'old' | 'ended'
+
+export interface PassengerView {
+  tone: PassengerTone
+  headline: string
+  detail: string | null
+  mapsUrl: string | null
+}
+
+/**
+ * The words for the passenger. `secondsSinceAnswer` is how long ago the page got the answer, so
+ * "last seen" keeps counting between refreshes. A position older than two minutes is shown as
+ * the LAST KNOWN place, never as a live dot.
+ */
+export function passengerView(t: PassengerTracking, secondsSinceAnswer = 0): PassengerView {
+  if (t.state === 'NOT_STARTED') {
+    return { tone: 'wait', headline: 'The bus has not left yet', detail: 'When the trip starts, you will see where the bus is here.', mapsUrl: null }
+  }
+  if (t.state === 'ENDED') {
+    return { tone: 'ended', headline: 'This trip has ended', detail: null, mapsUrl: null }
+  }
+  const p = t.position
+  if (!p) {
+    return { tone: 'wait', headline: 'The trip has started', detail: 'Waiting for the bus to share its location.', mapsUrl: null }
+  }
+  const age = p.ageSeconds + Math.max(0, secondsSinceAnswer)
+  const mapsUrl = `https://www.google.com/maps?q=${p.lat},${p.lng}`
+  if (age > STALE_AFTER_MS / 1000) {
+    return {
+      tone: 'old',
+      headline: 'Last known location of the bus',
+      detail: `Last seen ${agoText(age)} ago. The bus may be where there is no signal.`,
+      mapsUrl,
+    }
+  }
+  const parts = [`Last seen ${agoText(age)} ago`]
+  const kmh = p.speed === null ? 0 : Math.round(p.speed * 3.6)
+  if (kmh >= 5) parts.push(`moving about ${kmh} km/h`)
+  const acc = accuracyText(p.accuracy)
+  if (acc) parts.push(`GPS accuracy ${acc}`)
+  return { tone: 'live', headline: 'Your bus location is live', detail: parts.join(' · '), mapsUrl }
+}

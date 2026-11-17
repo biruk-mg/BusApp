@@ -5,12 +5,14 @@
  * started from 3 hours before it leaves, so Start trip works at once), on a bus of the company
  * the checker works for, with sample passengers: some already ticked as boarded, some not.
  *
- *   - 8 counter tickets (cash), some with several passengers, spread over the pickup points
- *   - 1 online ticket for a demo customer account, so the passenger side can follow the bus
- *     later: phone 0990000001, password password123
+ *   - 7 counter tickets (cash), some with several passengers, spread over the pickup points
+ *   - 2 online tickets for demo customer accounts, so the passenger side can follow the bus:
+ *       Abebe Kebede  phone 0990000011  (2 seats, both boarded)
+ *       Demo Passenger phone 0990000001 (1 seat, not boarded)
+ *     both with password password123
  *
  * Everything it creates can be taken away again with --remove (it only touches tickets whose
- * code starts with TEST and whose phone is a 099000... demo number).
+ * code starts with TEST and whose phone is a 099000... demo number, and the two demo customer accounts).
  *
  * Run from apps/api:
  *   DATABASE_URL="<direct url>" pnpm exec tsx prisma/seed-demo-live-trip.ts
@@ -28,7 +30,11 @@ import { normalizePhone, phoneVariants } from '../src/lib/phone'
 
 const CODE_PREFIX = 'TEST'
 const DEMO_PHONE_PREFIX = '099000'
-const DEMO_CUSTOMER_PHONE = '0990000001'
+const DEMO_CUSTOMERS = [
+  { name: 'Abebe Kebede', phone: '0990000011' },
+  { name: 'Demo Passenger', phone: '0990000001' },
+]
+const DEMO_CUSTOMER_PHONES = DEMO_CUSTOMERS.map((c) => c.phone)
 const DEMO_PASSWORD = 'password123'
 const PRICE = 330
 
@@ -42,8 +48,6 @@ interface Person { seat: string; name: string; boarded: boolean }
 interface Ticket { buyer: string; phone: string; pickup: string; people: Person[] }
 
 const COUNTER_TICKETS: Ticket[] = [
-  { buyer: 'Abebe Kebede', phone: '0990000011', pickup: 'Lamberet (main station)', people: [
-    { seat: '01', name: 'Abebe Kebede', boarded: true }, { seat: '02', name: 'Tigist Abebe', boarded: true } ] },
   { buyer: 'Selamawit Tadesse', phone: '0990000012', pickup: 'Lamberet (main station)', people: [
     { seat: '03', name: 'Selamawit Tadesse', boarded: true } ] },
   { buyer: 'Dawit Mekonnen', phone: '0990000013', pickup: 'Megenagna', people: [
@@ -65,7 +69,7 @@ async function remove() {
   const bookings = await prisma.booking.findMany({
     where: {
       ticketCode: { startsWith: CODE_PREFIX },
-      OR: [{ passengerPhone: { startsWith: DEMO_PHONE_PREFIX } }, { user: { phone: DEMO_CUSTOMER_PHONE } }],
+      OR: [{ passengerPhone: { startsWith: DEMO_PHONE_PREFIX } }, { user: { phone: { in: DEMO_CUSTOMER_PHONES } } }],
     },
     select: { id: true, scheduleId: true },
   })
@@ -77,7 +81,7 @@ async function remove() {
     await tx.booking.deleteMany({ where: { id: { in: bookingIds } } }) // passengers and ratings go with them
     // A trip is removed only when nothing else is booked on it (its live position goes with it)
     const trips = await tx.schedule.deleteMany({ where: { id: { in: scheduleIds }, bookings: { none: {} } } })
-    const users = await tx.user.deleteMany({ where: { phone: DEMO_CUSTOMER_PHONE, bookings: { none: {} } } })
+    const users = await tx.user.deleteMany({ where: { phone: { in: DEMO_CUSTOMER_PHONES }, bookings: { none: {} } } })
     console.log(`Removed ${bookingIds.length} demo ticket(s), ${trips.count} demo trip(s), ${users.count} demo customer account(s).`)
   })
 }
@@ -129,7 +133,7 @@ async function add() {
   })
   const busy = new Set(near.map((s) => s.busId))
   const bus = buses.find((b) => !busy.has(b.id)) ?? buses[0]
-  const lastSeat = Math.max(...COUNTER_TICKETS.flatMap((t) => t.people.map((p) => Number(p.seat))), 22)
+  const lastSeat = 22
   if (bus.totalSeats < lastSeat) throw new Error(`Bus ${bus.plateNumber} has fewer than ${lastSeat} seats`)
 
   const schedule = await prisma.schedule.create({
@@ -174,40 +178,52 @@ async function add() {
     })
   }
 
-  // One online ticket for a demo customer (so the passenger side can follow the bus later)
-  const customer = await prisma.user.upsert({
-    where: { phone: DEMO_CUSTOMER_PHONE },
-    update: {},
-    create: { name: 'Demo Passenger', phone: DEMO_CUSTOMER_PHONE, password: await bcrypt.hash(DEMO_PASSWORD, 10), role: 'CUSTOMER' },
-  })
-  const onlineCode = testCode()
-  await prisma.booking.create({
-    data: {
-      userId: customer.id,
-      scheduleId: schedule.id,
-      seatNumbers: ['22'],
-      totalPrice: PRICE,
-      status: 'CONFIRMED',
-      source: 'ONLINE',
-      ticketCode: onlineCode,
-      pickupPointId: pickup['Lamberet (main station)'],
-      qrCode: await QRCode.toDataURL(onlineCode),
-      commissionPercent: operator.commissionPercent,
-      passengers: { create: [{ seatNumber: '22', name: 'Demo Passenger', phone: DEMO_CUSTOMER_PHONE, pickupPointId: pickup['Lamberet (main station)'] }] },
-      payment: { create: { amount: PRICE, method: 'TELEBIRR', chapaRef: `TEST-${onlineCode}`, status: 'SUCCESS' } },
-    },
-  })
+  // Online tickets for two demo customer accounts (so the passenger side can follow the bus)
+  const onlineTickets: { customer: (typeof DEMO_CUSTOMERS)[number]; pickup: string; people: Person[] }[] = [
+    { customer: DEMO_CUSTOMERS[0], pickup: 'Lamberet (main station)', people: [
+      { seat: '01', name: 'Abebe Kebede', boarded: true }, { seat: '02', name: 'Tigist Abebe', boarded: true } ] },
+    { customer: DEMO_CUSTOMERS[1], pickup: 'Lamberet (main station)', people: [
+      { seat: '22', name: 'Demo Passenger', boarded: false } ] },
+  ]
+  const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 10)
+  for (const t of onlineTickets) {
+    const customer = await prisma.user.upsert({
+      where: { phone: t.customer.phone },
+      update: {},
+      create: { name: t.customer.name, phone: t.customer.phone, password: passwordHash, role: 'CUSTOMER' },
+    })
+    const onlineCode = testCode()
+    const total = PRICE * t.people.length
+    await prisma.booking.create({
+      data: {
+        userId: customer.id,
+        scheduleId: schedule.id,
+        seatNumbers: t.people.map((p) => p.seat),
+        totalPrice: total,
+        status: 'CONFIRMED',
+        source: 'ONLINE',
+        ticketCode: onlineCode,
+        pickupPointId: pickup[t.pickup],
+        qrCode: await QRCode.toDataURL(onlineCode),
+        commissionPercent: operator.commissionPercent,
+        passengers: { create: passengerRows(t.people, pickup[t.pickup], t.customer.phone) },
+        payment: { create: { amount: total, method: 'TELEBIRR', chapaRef: `TEST-${onlineCode}`, status: 'SUCCESS' } },
+      },
+    })
+  }
 
-  const all = COUNTER_TICKETS.flatMap((t) => t.people)
+  const all = [...COUNTER_TICKETS.flatMap((t) => t.people), ...onlineTickets.flatMap((t) => t.people)]
   const boarded = all.filter((p) => p.boarded).length
   console.log(`
 Demo trip ready for ${operator.companyName}
   Trip:        Addis Ababa -> Hossana, bus ${bus.plateNumber}
   Leaves:      ${addisTime(departureTime)} (Addis time)${minutes > 180 ? '   NOTE: more than 3 hours away, Start trip opens later' : ''}
   Trip id:     ${schedule.id}
-  Passengers:  ${all.length + 1} seats sold, ${boarded} already ticked as boarded
+  Passengers:  ${all.length} seats sold, ${boarded} already ticked as boarded
   Log in as:   ${checkerPhone} (checker screen: /checker, pick the date of the departure)
-  Demo customer (online ticket, seat 22): ${DEMO_CUSTOMER_PHONE} / ${DEMO_PASSWORD}
+  Passenger logins (password ${DEMO_PASSWORD}, open My bookings, then the ticket):
+    Abebe Kebede   ${DEMO_CUSTOMERS[0].phone}  seats 01, 02
+    Demo Passenger ${DEMO_CUSTOMERS[1].phone}  seat 22
 
 Remove it all later with:  pnpm exec tsx prisma/seed-demo-live-trip.ts --remove`)
 }

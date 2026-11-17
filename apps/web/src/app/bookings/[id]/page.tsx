@@ -7,6 +7,7 @@ import Navbar from '@/components/Navbar'
 import { formatDate, formatTime, formatPrice } from '@bus/utils'
 import { Bus, MapPin, Calendar, ArrowRight, Clock } from 'lucide-react'
 import RatingBox from '@/components/RatingBox'
+import BusTrackingCard from '@/components/BusTrackingCard'
 import type { OwnRating } from '@/lib/ratings'
 import toast from 'react-hot-toast'
 
@@ -160,6 +161,12 @@ export default function BookingDetailPage() {
   )
 
   const isPaid = booking.payment?.status === 'SUCCESS'
+  // The bus can be followed by the owner of a paid online ticket, from 12 hours before departure
+  // until a day after it
+  const departsAt = new Date(booking.schedule.departureTime).getTime()
+  const canFollowBus =
+    isPaid && booking.source !== 'COUNTER' && (booking.status === 'CONFIRMED' || booking.status === 'COMPLETED') &&
+    now > departsAt - 12 * 3600_000 && now < departsAt + 24 * 3600_000
   const hasPeople = (booking.passengers?.length ?? 0) > 0
   const msLeft = booking.expiresAt ? new Date(booking.expiresAt).getTime() - now : null
   const holdLabel = msLeft !== null && msLeft > 0
@@ -211,6 +218,8 @@ export default function BookingDetailPage() {
                 : 'You cancelled this ticket. This close to departure, our Refund Policy gives no money back.'}
           </div>
         )}
+
+        {canFollowBus && <BusTrackingCard bookingId={booking.id} />}
 
         {/* E-Ticket Card */}
         <div style={{ background: 'white', borderRadius: '20px', overflow: 'hidden', boxShadow: '0 4px 24px rgba(0,0,0,0.08)' }}>
