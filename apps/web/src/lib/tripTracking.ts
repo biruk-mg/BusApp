@@ -123,6 +123,9 @@ export interface PassengerTracking {
     recordedAt: string
     ageSeconds: number // worked out by the server when it answered
   }
+  // The passenger's own pickup point (when it has a map position) and the estimated minutes to it
+  pickup: null | { name: string; lat: number; lng: number }
+  eta: null | { minutes: number; distanceKm: number; basis: 'SPEED' | 'AVERAGE'; arriving: boolean }
 }
 
 export type PassengerTone = 'wait' | 'live' | 'old' | 'ended'
@@ -132,6 +135,35 @@ export interface PassengerView {
   headline: string
   detail: string | null
   mapsUrl: string | null
+  /** "About 25 min to Bole Ambassador", or null when there is no estimate */
+  etaLine: string | null
+  /** How the estimate was made, in a few words */
+  etaNote: string | null
+}
+
+/**
+ * Minutes in words. An estimate must not look exact: under 10 minutes it is as the server said,
+ * from 10 minutes it is rounded to the nearest 5, from an hour it is hours and minutes.
+ */
+export function etaMinutesText(minutes: number): string {
+  const m = Math.max(1, Math.round(minutes))
+  const shown = m < 10 ? m : Math.round(m / 5) * 5
+  if (shown < 60) return `${shown} min`
+  const h = Math.floor(shown / 60)
+  const rest = shown % 60
+  return rest === 0 ? `${h} h` : `${h} h ${rest} min`
+}
+
+function etaWords(t: PassengerTracking): Pick<PassengerView, 'etaLine' | 'etaNote'> {
+  if (!t.eta || !t.pickup) return { etaLine: null, etaNote: null }
+  if (t.eta.arriving) return { etaLine: `The bus is close to ${t.pickup.name}`, etaNote: null }
+  return {
+    etaLine: `About ${etaMinutesText(t.eta.minutes)} to ${t.pickup.name}`,
+    etaNote:
+      t.eta.basis === 'SPEED'
+        ? `${t.eta.distanceKm} km away in a straight line, at the bus's current speed. An estimate: traffic and the road can change it.`
+        : `${t.eta.distanceKm} km away in a straight line, at a usual bus speed because the bus is slow or stopped. An estimate: traffic and the road can change it.`,
+  }
 }
 
 /**
@@ -141,14 +173,14 @@ export interface PassengerView {
  */
 export function passengerView(t: PassengerTracking, secondsSinceAnswer = 0): PassengerView {
   if (t.state === 'NOT_STARTED') {
-    return { tone: 'wait', headline: 'The bus has not left yet', detail: 'When the trip starts, you will see where the bus is here.', mapsUrl: null }
+    return { tone: 'wait', headline: 'The bus has not left yet', detail: 'When the trip starts, you will see where the bus is here.', mapsUrl: null, etaLine: null, etaNote: null }
   }
   if (t.state === 'ENDED') {
-    return { tone: 'ended', headline: 'This trip has ended', detail: null, mapsUrl: null }
+    return { tone: 'ended', headline: 'This trip has ended', detail: null, mapsUrl: null, etaLine: null, etaNote: null }
   }
   const p = t.position
   if (!p) {
-    return { tone: 'wait', headline: 'The trip has started', detail: 'Waiting for the bus to share its location.', mapsUrl: null }
+    return { tone: 'wait', headline: 'The trip has started', detail: 'Waiting for the bus to share its location.', mapsUrl: null, etaLine: null, etaNote: null }
   }
   const age = p.ageSeconds + Math.max(0, secondsSinceAnswer)
   const mapsUrl = `https://www.google.com/maps?q=${p.lat},${p.lng}`
@@ -158,6 +190,9 @@ export function passengerView(t: PassengerTracking, secondsSinceAnswer = 0): Pas
       headline: 'Last known location of the bus',
       detail: `Last seen ${agoText(age)} ago. The bus may be where there is no signal.`,
       mapsUrl,
+      // An old position gives no honest estimate
+      etaLine: null,
+      etaNote: null,
     }
   }
   const parts = [`Last seen ${agoText(age)} ago`]
@@ -165,5 +200,5 @@ export function passengerView(t: PassengerTracking, secondsSinceAnswer = 0): Pas
   if (kmh >= 5) parts.push(`moving about ${kmh} km/h`)
   const acc = accuracyText(p.accuracy)
   if (acc) parts.push(`GPS accuracy ${acc}`)
-  return { tone: 'live', headline: 'Your bus location is live', detail: parts.join(' · '), mapsUrl }
+  return { tone: 'live', headline: 'Your bus location is live', detail: parts.join(' · '), mapsUrl, ...etaWords(t) }
 }

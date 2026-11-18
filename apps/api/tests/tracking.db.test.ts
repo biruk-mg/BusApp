@@ -356,7 +356,7 @@ describe.skipIf(!TEST_URL)('live tracking (database, real routes)', () => {
       expect(p.ageSeconds).toBeGreaterThanOrEqual(95)
       expect(p.ageSeconds).toBeLessThan(110)
       // Only the position fields: nothing about the company's staff, phone or other passengers
-      expect(Object.keys(res.body.data.tracking).sort()).toEqual(['endedAt', 'position', 'startedAt', 'state'])
+      expect(Object.keys(res.body.data.tracking).sort()).toEqual(['endedAt', 'eta', 'pickup', 'position', 'startedAt', 'state'])
       expect(Object.keys(p).sort()).toEqual(['accuracy', 'ageSeconds', 'heading', 'lat', 'lng', 'recordedAt', 'speed'])
     })
 

@@ -8,7 +8,7 @@ import {
   getAllBookings,
 } from '../controllers/booking.controller'
 import { rateBooking } from '../controllers/rating.controller'
-import { getBookingTracking } from '../controllers/tracking.controller'
+import { getBookingTracking, getNextTrackableBooking } from '../controllers/tracking.controller'
 import { rateLimit } from '../middleware/rateLimit'
 import { authenticate, authorizeAdmin, type AuthRequest } from '../middleware/auth'
 
@@ -25,6 +25,8 @@ const passengerPolls = rateLimit({
 // All booking routes require authentication
 router.post('/', authenticate, createBooking)
 router.get('/my', authenticate, getMyBookings)
+// Before '/:id', so "tracking" is not read as a booking id
+router.get('/tracking/next', authenticate, passengerPolls, getNextTrackableBooking)
 router.get('/:id', authenticate, getBooking)
 router.get('/:id/refund-preview', authenticate, getRefundPreview)
 router.patch('/:id/cancel', authenticate, cancelBooking)

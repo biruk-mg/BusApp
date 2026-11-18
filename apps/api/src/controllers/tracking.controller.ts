@@ -5,7 +5,10 @@ import { AuthRequest } from '../middleware/auth'
 import {
   START_EARLY_HOURS,
   START_LATE_HOURS,
+  FOLLOW_AFTER_HOURS,
+  FOLLOW_BEFORE_HOURS,
   canStartNow,
+  choosePickup,
   positionBody,
   recordedAtProblem,
   shapeTracking,
@@ -134,6 +137,8 @@ export const getBookingTracking = async (req: AuthRequest, res: Response): Promi
       select: {
         userId: true,
         status: true,
+        pickupPoint: { select: { name: true, lat: true, lng: true } },
+        passengers: { select: { seatNumber: true, pickupPoint: { select: { name: true, lat: true, lng: true } } } },
         schedule: { select: { startedAt: true, endedAt: true, position: true } },
       },
     })
@@ -141,8 +146,55 @@ export const getBookingTracking = async (req: AuthRequest, res: Response): Promi
     if (!booking || booking.userId !== req.userId || !PAID.includes(booking.status)) {
       return void fail(res, 404, 'Booking not found')
     }
-    res.json({ success: true, data: { tracking: shapeTracking(booking.schedule) } })
+    res.json({ success: true, data: { tracking: shapeTracking(booking.schedule, new Date(), choosePickup(booking)) } })
   } catch (error) {
     serverError(res, 'GetBookingTracking', error)
+  }
+}
+
+/**
+ * GET /bookings/tracking/next  (the "Track my bus" button on the home page)
+ * The passenger's own paid ONLINE booking whose bus can be followed now: a trip that is live
+ * comes first, then the one leaving soonest. Counter tickets never count. Null when there is none.
+ */
+export const getNextTrackableBooking = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const HOUR = 60 * 60 * 1000
+    const now = Date.now()
+    const bookings = await prisma.booking.findMany({
+      where: {
+        userId: req.userId,
+        status: { in: ['CONFIRMED', 'COMPLETED'] },
+        source: 'ONLINE',
+        schedule: {
+          endedAt: null,
+          departureTime: { gt: new Date(now - FOLLOW_AFTER_HOURS * HOUR), lt: new Date(now + FOLLOW_BEFORE_HOURS * HOUR) },
+        },
+      },
+      select: {
+        id: true,
+        schedule: { select: { startedAt: true, departureTime: true, route: { select: { fromCity: true, toCity: true } } } },
+      },
+      orderBy: { schedule: { departureTime: 'asc' } },
+      take: 10,
+    })
+    // Live trips first, then by departure (already in that order within each group)
+    const best = bookings.find((b) => b.schedule.startedAt) ?? bookings[0]
+    res.json({
+      success: true,
+      data: {
+        next: best
+          ? {
+              bookingId: best.id,
+              live: !!best.schedule.startedAt,
+              departureTime: best.schedule.departureTime,
+              fromCity: best.schedule.route.fromCity,
+              toCity: best.schedule.route.toCity,
+            }
+          : null,
+      },
+    })
+  } catch (error) {
+    serverError(res, 'GetNextTrackableBooking', error)
   }
 }

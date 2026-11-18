@@ -6,6 +6,7 @@ import Link from 'next/link'
 import Navbar from '@/components/Navbar'
 import Footer from '@/components/Footer'
 import OffersBanner, { OfferBanner } from '@/components/OffersBanner'
+import TrackMyBusButton from '@/components/TrackMyBusButton'
 import { api } from '@/lib/api'
 import { SITE } from '@/lib/site'
 import { useI18n } from '@/i18n/LanguageProvider'
@@ -253,6 +254,7 @@ export default function HomePage() {
         {/* Hero */}
         <div className="hero-section">
           <div>
+            <TrackMyBusButton />
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', background: '#FEF9E7', border: '1px solid #F0D060', borderRadius: '20px', padding: '6px 14px', marginBottom: '20px' }}>
               <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#C0392B' }} />
               <span style={{ fontSize: '12px', color: '#C0392B', fontWeight: 500 }}>{t('home.badge')}</span>
