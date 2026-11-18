@@ -5,6 +5,7 @@ import { Toaster } from 'react-hot-toast'
 import Providers from './providers'
 import { LanguageProvider } from '@/i18n/LanguageProvider'
 import { getLocale } from '@/i18n/server'
+import InstallPrompt from '@/components/InstallPrompt'
 
 // Geist for Latin letters. Noto Sans Ethiopic covers Amharic (the browser only
 // downloads it when a page actually contains Ethiopic letters).
@@ -14,6 +15,10 @@ const ethiopic = Noto_Sans_Ethiopic({ subsets: ['ethiopic'], variable: '--font-e
 export const metadata: Metadata = {
   title: 'MugoBus — Book Bus Tickets Online',
   description: 'Book bus tickets across Ethiopia easily and securely',
+  applicationName: 'MugoBus',
+  // iPhone: the icon for the home screen, and open full screen from it
+  icons: { apple: '/apple-touch-icon.png' },
+  appleWebApp: { capable: true, title: 'MugoBus', statusBarStyle: 'default' },
 }
 
 export default async function RootLayout({
@@ -29,6 +34,7 @@ export default async function RootLayout({
           <Providers>
             {children}
             <Toaster position="top-right" />
+            <InstallPrompt />
           </Providers>
         </LanguageProvider>
       </body>
