@@ -14,6 +14,7 @@ import {
   shapeTracking,
   tripPhase,
 } from '../lib/tracking'
+import { onLocation } from '../lib/arrivalAlertRunner'
 
 /**
  * Live tracking. The checker routes are for staff of ONE company: the company always comes
@@ -124,6 +125,10 @@ export const sendLocation = async (req: AuthRequest, res: Response): Promise<voi
     }
 
     res.json({ success: true, data: { stored } })
+
+    // After the answer has gone: the checker's phone never waits for the alerts, and a problem
+    // with them can never turn a stored position into an error.
+    if (stored) onLocation(trip.id).catch((error) => console.error('ArrivalAlerts error:', error))
   } catch (error) {
     serverError(res, 'SendLocation', error)
   }

@@ -16,6 +16,7 @@ model User {
   bookings  Booking[]
   ratings   Rating[]
   staff     OperatorStaff?
+  pushSubscriptions PushSubscription[]
 
   // Login sessions. Every login token carries this number; changing or resetting the
   // password adds 1, which logs the person out of every other device at once.
@@ -106,6 +107,11 @@ model Schedule {
   startedAt     DateTime?
   endedAt       DateTime?
   position      TripPosition?
+
+  // How far along its pickup points the bus has got: the order number (0 = the first one) of
+  // the furthest pickup point it has been near. It only ever moves forward. Null = not near any yet.
+  pickupProgress Int?
+  arrivalAlerts  ArrivalAlert[]
 
   // A recurring schedule can never create the same departure twice.
   // Manual trips have no template (NULL), so they are not affected.
@@ -208,6 +214,9 @@ model Booking {
 
   // The passenger's rating of this trip (at most one)
   rating Rating?
+
+  // Which "your bus is near" alerts were already decided for this booking
+  arrivalAlerts ArrivalAlert[]
 
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
@@ -462,4 +471,54 @@ model Rating {
 
   @@index([operatorId, createdAt])
   @@index([busId])
+}
+
+
+// A phone (browser) that agreed to get notifications, for one account. One account can have
+// several (phone + laptop). `endpoint` is the push service's address for that browser: it is
+// unique, so the same browser can never be listed twice. A dead one (the browser says it is
+// gone) is deleted the next time a notification is sent to it.
+model PushSubscription {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endpoint   String   @unique
+  p256dh     String
+  auth       String
+  // Language of the notification text: en, am or om
+  lang       String   @default("en")
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+}
+
+enum ArrivalAlertType {
+  DEPART_SOON   // 30 minutes before departure, for passengers at the first pickup point
+  TRIP_STARTED  // the checker started the trip
+  HALFWAY       // the bus is halfway (in pickup points) to the passenger's pickup point
+  NEXT_STOP     // the bus is at the pickup point before the passenger's
+}
+
+enum ArrivalAlertStatus {
+  SENT     // the notification was handed to the push service
+  SKIPPED  // no longer useful (the bus was already further along), so nothing was sent
+  FAILED   // tried, but no phone could be reached
+}
+
+// The record of which alerts were decided, so that every alert is sent at most once per
+// booking and pickup point, even if two requests handle the same bus position at the same time.
+// The unique key is what makes that safe: only the request that manages to insert the row sends.
+model ArrivalAlert {
+  id            String             @id @default(cuid())
+  scheduleId    String
+  schedule      Schedule           @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  bookingId     String
+  booking       Booking            @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  pickupPointId String
+  type          ArrivalAlertType
+  status        ArrivalAlertStatus
+  createdAt     DateTime           @default(now())
+
+  @@unique([bookingId, pickupPointId, type])
+  @@index([scheduleId])
 }

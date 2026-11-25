@@ -17,6 +17,8 @@ import checkinRoutes from './routes/checkin.routes'
 import ticketRoutes from './routes/ticket.routes'
 import adminRoutes from './routes/admin.routes'
 import publicRoutes from './routes/public.routes'
+import pushRoutes from './routes/push.routes'
+import internalRoutes from './routes/internal.routes'
 import { maybeTopUp } from './lib/recurring'
 import { assertEnv } from './lib/env'
 import { corsGuard, parseOrigins } from './lib/cors'
@@ -70,6 +72,8 @@ app.use('/api/v1/tickets', ticketRoutes)
 app.use('/api/v1/admin', adminRoutes)
 app.use('/api/v1/public', publicRoutes)
 app.use('/api/v1/checkin', checkinRoutes)
+app.use('/api/v1/push', pushRoutes)
+app.use('/api/v1/internal', internalRoutes)
 // ─── Swagger Docs ────────────────────────────────────────
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec))
 
