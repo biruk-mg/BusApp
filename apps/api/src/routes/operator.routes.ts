@@ -30,7 +30,9 @@ import {
 import { getMyEarnings } from '../controllers/payout.controller'
 import { getMySales } from '../controllers/sales.controller'
 import { getMyRatings } from '../controllers/rating.controller'
-import { authenticate } from '../middleware/auth'
+import { getMyStatement, downloadMyStatementCsv, downloadMySalesCsv } from '../controllers/statement.controller'
+import { rateLimit } from '../middleware/rateLimit'
+import { authenticate, type AuthRequest } from '../middleware/auth'
 import { requireManager, requireStaff } from '../middleware/staff'
 
 const router: IRouter = Router()
@@ -39,12 +41,23 @@ const router: IRouter = Router()
 // for now. Counter sales (sellers) and check-in (checkers) get their own routes later.
 const managerOnly = [authenticate, requireManager]
 
+// Statements read a lot of rows, so each account gets a limited number per hour
+const statementsPerAccount = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 60,
+  key: (req) => ((req as AuthRequest).userId ? `statements:${(req as AuthRequest).userId}` : null),
+  message: 'Too many statement requests. Please try again later.',
+})
+
 router.get('/profile', ...managerOnly, getOperatorProfile)
 router.get('/buses', ...managerOnly, getOperatorBuses)
 router.post('/buses', ...managerOnly, createBus)
 router.get('/bookings', ...managerOnly, getOperatorBookings)
 router.get('/earnings', ...managerOnly, getMyEarnings)
 router.get('/sales', ...managerOnly, getMySales)
+router.get('/statement', ...managerOnly, statementsPerAccount, getMyStatement)
+router.get('/statement.csv', ...managerOnly, statementsPerAccount, downloadMyStatementCsv)
+router.get('/exports/sales.csv', ...managerOnly, statementsPerAccount, downloadMySalesCsv)
 router.get('/ratings', ...managerOnly, getMyRatings)
 router.get('/stats', ...managerOnly, getOperatorStats)
 router.get('/analytics', ...managerOnly, getRevenueAnalytics)
