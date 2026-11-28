@@ -1,8 +1,9 @@
 import type { MetadataRoute } from 'next'
 
 // Makes the site installable: "Add to Home Screen" puts a MugoBus icon on the phone that opens
-// the site full screen, like an app. There is no service worker on purpose: booking and payment
-// must always be live, never served from a saved copy.
+// the site full screen, like an app. The only service worker (public/sw.js) shows "your bus is
+// near" notifications and nothing else: it has no cache and no fetch handler on purpose, because
+// booking and payment must always be live, never served from a saved copy.
 export default function manifest(): MetadataRoute.Manifest {
   return {
     name: 'MugoBus — Book Bus Tickets Online',

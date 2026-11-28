@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { usePassengerTracking } from '@/hooks/usePassengerTracking'
 import { Radio, MapPin, Map as MapIcon } from 'lucide-react'
 import { PassengerTone, passengerView } from '@/lib/tripTracking'
+import AlertsToggle from '@/components/AlertsToggle'
 
 const REFRESH_MS = 20_000
 
@@ -49,6 +50,7 @@ export default function BusTrackingCard({ bookingId }: { bookingId: string }) {
           )}
         </div>
       )}
+      {tracking && tracking.state !== 'ENDED' && <AlertsToggle />}
     </div>
   )
 }

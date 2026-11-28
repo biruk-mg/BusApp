@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { User } from '@bus/types'
+import { forgetThisBrowser } from '@/lib/push'
 
 interface AuthState {
   user: User | null
@@ -29,6 +30,9 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   logout: () => {
+    // This browser must stop getting this person's alerts (a shared phone). Needs the token, so it starts before the token is cleared.
+    const token = localStorage.getItem('token')
+    if (token) void forgetThisBrowser(token)
     localStorage.removeItem('token')
     localStorage.removeItem('user')
     set({ user: null, token: null, isAuthenticated: false })
